@@ -1,0 +1,186 @@
+# Video Translation Configuration
+# Video Auto-Translation System
+
+output:
+  # Output directory for processed files
+  output_directory: "./output"
+  # Where YouTube videos are downloaded
+  video_download_directory: 'C:\Temp'
+  # Where subtitles are generated
+  subtitles_directory: 'C:\Temp'
+  # Output video format
+  video_format: "mp4"
+  # Output video quality (low, medium, high, original) => not used for the moment
+  video_quality: "high"
+  # Keep original audio track (true/false)
+  keep_original_audio: true
+  # Add subtitles (true/false)
+  add_subtitles: true
+  # Subtitle format (srt, vtt, ass)
+  subtitle_format: "srt"
+
+# Translation Settings
+translation:
+  # Service: "google_translate", "deepl", "azure", "openai"
+  service: "deepl"
+  retry:
+    max_retries: 5
+    initial_delay_seconds: 1.0
+    max_delay_seconds: 30.0
+    backoff_multiplier: 2.0
+    jitter_ratio: 0.2
+  # Source language
+  source_language: "ja"
+  # Target language
+  target_language: "fr"
+  deepl:
+    plan: "free"
+    # Override retry settings per service if needed (optional)
+  # API Keys (set as environment variables or fill here)
+  api_keys:
+    google_translate: ""
+    deepl: ""
+    azure: ""
+    openai: ""
+  # Translation quality (fast, standard, high_quality)
+  quality: "standard"
+  # Preserve formatting (true/false)
+  preserve_formatting: true
+  # Custom translation prompts
+  custom_prompts:
+    enable: false
+    system_prompt: "Translate the following {source_language_name} text to natural, fluent {target_language_name}. Preserve the original meaning and tone."
+    user_prompt_template: "{text}"
+
+  # OpenAI-specific options (only used if service: "openai")
+  openai:
+    model: "gpt-4o-mini"  
+
+input:
+  # Supported sources: "youtube", "local_file"
+  source_type: "youtube"
+  # For YouTube: video URL or video ID
+  youtube_url: ""
+  # For local files: path to video file
+  local_file_path: ""
+  # Supported formats: mp4, avi, mov, mkv, webm
+  supported_formats: ["mp4", "avi", "mov", "mkv", "webm"]    
+
+# Audio Processing
+audio:
+  # Audio extraction format
+  extraction_format: "wav"
+  # Audio quality for extraction
+  audio_quality: "high"
+  # Sample rate for audio processing (Hz)
+  sample_rate: 16000
+  # Audio channels (1 for mono, 2 for stereo)
+  channels: 1
+  # Normalize audio volume (true/false)
+  normalize_volume: true
+
+# Speech Recognition (Japanese)
+speech_recognition:
+  # Engine: "whisper", "google", "azure"
+  engine: "whisper"
+  # Whisper model size (tiny, base, small, medium, large, turbo)
+  whisper_model: "large"
+  # Enable speaker diarization (true/false)
+  enable_diarization: false
+  # Maximum segment length (seconds)
+  max_segment_length: 30
+  # Confidence threshold (0.0-1.0)
+  confidence_threshold: 0.5
+
+# Text-to-Speech (French)
+tts:
+  # Engine: "google_tts", "azure_tts", "openai_tts", "pyttsx3"
+  engine: "google_tts"
+  # Voice settings
+  voice:
+    # Voice name (leave empty for auto-selection)
+    name: ""
+    # Gender (male, female, neutral)
+    gender: "female"
+    # Age (child, young, adult, senior)
+    age: "adult"
+    # Speech rate (0.1 to 2.0, 1.0 is normal)
+    rate: 1.0
+    # Pitch (-20.0 to 20.0, 0 is normal)
+    pitch: 0
+    # Volume (0.0 to 1.0)
+    volume: 1.0
+  # Audio format for TTS output
+  output_format: "wav"
+  # Sample rate for TTS
+  sample_rate: 22050
+
+# Video Processing
+video:
+  # FFmpeg path (leave empty for system PATH)
+  ffmpeg_path: ""
+  # Video encoding settings
+  encoding:
+    # Video codec (libx264, libx265, copy)
+    codec: "libx264"
+    # Preset (ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow)
+    preset: "medium"
+    # CRF value (0-51, lower is better quality)
+    crf: 23
+    # Audio codec (aac, mp3, copy)
+    audio_codec: "aac"
+    # Audio bitrate (k)
+    audio_bitrate: 128
+  # Processing threads
+  threads: 4
+  # Temp directory for processing
+  temp_directory: "./temp"
+
+# Processing Settings
+processing:
+  # Enable parallel processing (true/false)
+  parallel_processing: true
+  # Maximum concurrent processes
+  max_concurrent_processes: 2
+  # Chunk size for large files (MB)
+  chunk_size: 100
+  # Enable progress tracking (true/false)
+  show_progress: true
+  # Log level (DEBUG, INFO, WARNING, ERROR)
+  log_level: "INFO"
+  chapter_autoselect_patterns:
+    - "^MC"
+  # Save intermediate files (true/false)
+  save_intermediate: false
+  # Clean temp/intermediate files at start of each run (true/false)
+  clean_temp_on_start: true
+
+# Advanced Settings
+advanced:
+  # Enable GPU acceleration (true/false)
+  gpu_acceleration: false
+  # GPU device ID (for multi-GPU systems)
+  gpu_device: 0
+  # Memory limit (GB)
+  memory_limit: 8
+  # Timeout for operations (seconds)
+  timeout: 3600
+  # Retry attempts for failed operations
+  retry_attempts: 3
+  # Retry delay (seconds)
+  retry_delay: 5
+
+# Quality Control
+quality_control:
+  # Enable quality checks (true/false)
+  enable_checks: true
+  # Minimum audio duration (seconds)
+  min_audio_duration: 1
+  # Maximum silence duration (seconds)
+  max_silence_duration: 5
+  # Minimum text length for translation
+  min_text_length: 1
+  # Maximum text length per segment
+  max_text_length: 500
+  # Validate translations (true/false)
+  validate_translations: false
