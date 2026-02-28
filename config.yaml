@@ -6,8 +6,6 @@ output:
   output_directory: "./output"
   # Where YouTube videos are downloaded
   video_download_directory: 'C:\Temp'
-  # Where subtitles are generated
-  subtitles_directory: 'C:\Temp'
   # Output video format
   video_format: "mp4"
   # Output video quality (low, medium, high, original) => not used for the moment

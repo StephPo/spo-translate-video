@@ -301,8 +301,13 @@ def generate_french_subtitles(
     out_dir = Path(config.get("output", {}).get("output_directory", "./output"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    subtitles_dir = Path(config.get("output", {}).get("subtitles_directory", str(out_dir)))
-    subtitles_dir.mkdir(parents=True, exist_ok=True)
+    def compute_subtitles_dir(effective_source_type: str, resolved_video_path: Optional[Path]) -> Path:
+        dest_override = bool(config.get("_runtime", {}).get("dest_override"))
+        if effective_source_type == "local" and not dest_override:
+            if resolved_video_path is not None:
+                return resolved_video_path.parent
+            return Path(input_source).resolve().parent
+        return Path(config.get("output", {}).get("video_download_directory", str(out_dir)))
 
     progress("input", 0, "Loading video...")
     if dry_run:
@@ -327,8 +332,7 @@ def generate_french_subtitles(
             else:
                 base = "youtube_video"
 
-        subtitles_dir = Path(config.get("output", {}).get("subtitles_directory", str(config.get("output", {}).get("output_directory", "./output"))))
-        planned_subtitle = subtitles_dir / f"{base}.{tgt}.srt"
+        planned_subtitle = compute_subtitles_dir(source_type, None) / f"{base}.{tgt}.srt"
 
         print("\nDry run:")
         print(f"- Source type: {source_type}")
@@ -378,6 +382,9 @@ def generate_french_subtitles(
     video_path = Path(video_result.video_path)
     title = (video_result.metadata or {}).get("title") or video_path.stem
     progress("input", 100, f"Video ready: {title}")
+
+    subtitles_dir = compute_subtitles_dir(source_type, video_path)
+    subtitles_dir.mkdir(parents=True, exist_ok=True)
 
     if download_only or info_only:
         if info_only:
@@ -712,11 +719,19 @@ def main():
     config = _load_config_with_local(args.config, args.config_local)
     _setup_logging(config)
 
+    if (
+        not args.dest
+        and args.source_type in ["local", "auto"]
+        and not args.input.startswith(("http://", "https://"))
+    ):
+        src_dir = str(Path(args.input).resolve().parent)
+        config.setdefault("output", {})["output_directory"] = src_dir
+
     if args.dest:
         dest = str(Path(args.dest).expanduser())
+        config.setdefault("_runtime", {})["dest_override"] = True
         config.setdefault("output", {})["output_directory"] = dest
         config.setdefault("output", {})["video_download_directory"] = dest
-        config.setdefault("output", {})["subtitles_directory"] = dest
 
     res = generate_french_subtitles(
         config=config,

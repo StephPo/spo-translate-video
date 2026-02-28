@@ -114,7 +114,11 @@ The downloaded `.mp4` filename is based on the YouTube title (sanitized for Wind
 By default, destination folders come from `config.yaml`:
 
 - `output.video_download_directory`
-- `output.subtitles_directory`
+
+Subtitle output rules (when `--dest` is not set):
+
+- Downloads (YouTube / m3u8): subtitles are written next to the downloaded video, i.e. `output.video_download_directory`
+- Local files: subtitles are written next to the source video file
 
 Use `--dest` to override those destinations for a single run:
 
@@ -189,11 +193,15 @@ If you request chapter selection but the file has no chapters (or nothing matche
 ## Output
 
 - Downloaded videos: `output.video_download_directory`
-- Generated subtitles: `output.subtitles_directory`
+
+Subtitles are generated:
+
+- For downloads: in `output.video_download_directory`
+- For local files: in the source video directory
 
 Example output subtitle:
 
-- `<subtitles_directory>/<video_basename>.fr.srt`
+- `<output_folder>/<video_basename>.fr.srt`
 
 ## Temp files and cleanup
 
