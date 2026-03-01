@@ -6,6 +6,7 @@ import yt_dlp
 from dataclasses import dataclass
 import re
 import subprocess
+import time
 from urllib.parse import urlparse
 
 @dataclass
@@ -29,6 +30,68 @@ class VideoDownloader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+
+    def preflight_youtube_quality(self, url: str) -> Dict[str, Any]:
+        """Return which quality we'd get with current MP4-only selector vs best overall.
+
+        Uses yt-dlp's format selection (without downloading) so results match real behavior.
+        """
+        try:
+            base_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'skip_download': True,
+            }
+
+            # What we would download today (MP4-only selection)
+            ydl_opts_mp4 = dict(base_opts)
+            ydl_opts_mp4['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
+            # True best available (any container)
+            ydl_opts_best = dict(base_opts)
+            ydl_opts_best['format'] = 'bestvideo+bestaudio/best'
+
+            with yt_dlp.YoutubeDL(ydl_opts_mp4) as ydl:
+                info_mp4 = ydl.extract_info(url, download=False)
+            with yt_dlp.YoutubeDL(ydl_opts_best) as ydl:
+                info_best = ydl.extract_info(url, download=False)
+
+            mp4_video = self._extract_selected_video_stream(info_mp4)
+            best_video = self._extract_selected_video_stream(info_best)
+
+            best_overall_height = int((best_video or {}).get('height') or 0)
+            best_mp4_height = int((mp4_video or {}).get('height') or 0)
+
+            return {
+                'best_overall': best_video,
+                'best_mp4': mp4_video,
+                'best_overall_height': best_overall_height,
+                'best_mp4_height': best_mp4_height,
+                'is_downgraded': best_overall_height > best_mp4_height and best_mp4_height > 0,
+                'title': (info_best or {}).get('title') or (info_mp4 or {}).get('title') or '',
+                'id': (info_best or {}).get('id') or (info_mp4 or {}).get('id') or '',
+            }
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _extract_selected_video_stream(self, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            requested_downloads = (info or {}).get('requested_downloads') or []
+            for r in requested_downloads:
+                if not isinstance(r, dict):
+                    continue
+                vcodec = r.get('vcodec')
+                if vcodec and vcodec != 'none':
+                    return r
+
+            # Fallback: if yt-dlp didn't populate requested_downloads, try the top-level dict
+            vcodec = (info or {}).get('vcodec')
+            if vcodec and vcodec != 'none':
+                return info
+            return None
+        except Exception:
+            return None
     
     def download_from_youtube(self, url: str) -> DownloadResult:
         """Download video from YouTube"""
@@ -53,6 +116,16 @@ class VideoDownloader:
 
                 video_path = self._extract_final_video_path(info)
                 audio_path = None
+
+                requested_downloads = info.get('requested_downloads') or []
+                downloaded_video = None
+                for r in requested_downloads:
+                    if not isinstance(r, dict):
+                        continue
+                    vcodec = r.get('vcodec')
+                    if vcodec and vcodec != 'none':
+                        downloaded_video = r
+                        break
 
                 if video_path:
                     try:
@@ -83,6 +156,9 @@ class VideoDownloader:
                     'description': info.get('description', ''),
                     'view_count': info.get('view_count', 0),
                     'like_count': info.get('like_count', 0),
+                    'downloaded_video_height': int((downloaded_video or {}).get('height') or 0),
+                    'downloaded_video_ext': str((downloaded_video or {}).get('ext') or ''),
+                    'downloaded_video_vcodec': str((downloaded_video or {}).get('vcodec') or ''),
                 }
                 
                 return DownloadResult(
@@ -213,7 +289,9 @@ class VideoDownloader:
         if 'overwrite_existing' in rt:
             return bool(rt['overwrite_existing'])
 
+        t0 = time.perf_counter()
         ans = input("Output file already exists. Overwrite? (y/n): ").strip().lower()
+        rt['user_wait_seconds'] = float(rt.get('user_wait_seconds') or 0.0) + (time.perf_counter() - t0)
         overwrite = ans == 'y'
         rt['overwrite_existing'] = overwrite
         return overwrite
