@@ -837,6 +837,13 @@ def generate_french_subtitles(
     write_srt(cues, subtitle_path)
     progress("subtitles", 100, f"Wrote {subtitle_path.name}")
 
+    if not resume:
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+        except Exception:
+            pass
+
     timings_seconds["total"] = time.perf_counter() - t0_total
     timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
 

@@ -35,6 +35,57 @@ What it does:
 - Installs dependencies once (from `requirements.txt`)
 - Runs `main.py` and passes through all arguments
 
+## Browser integration (Windows): one-click from YouTube
+
+You can trigger the scripts directly from a YouTube page using a Windows custom URL protocol handler.
+
+This gives a mouse-only workflow:
+
+- Click a bookmarklet (or a link)
+- Confirm the browser prompt to open an external application (if shown)
+- A Windows Terminal window opens and runs the script
+
+### Install protocol handlers (per user, no admin)
+
+Run this once in PowerShell:
+
+```powershell
+./install-protocol-handlers.ps1
+```
+
+It installs:
+
+- `spodl:` -> runs `spo-dl-video.bat` (download-only)
+- `spotr:` -> runs `spo-translate-video.bat` (download + translate)
+
+To uninstall:
+
+```powershell
+./uninstall-protocol-handlers.ps1
+```
+
+### Bookmarklets (recommended)
+
+Create 2 bookmarks in Chrome and set their URL to the JavaScript below.
+
+They:
+
+- work on the current tab
+- remove playlist/list noise (like `list=` / `index=`)
+- remove all other query params (keeps only `v=`)
+
+#### Download only
+
+```text
+javascript:(()=>{try{const u=new URL(location.href);const v=u.searchParams.get('v');if(!v){alert('Not a YouTube watch page');return;}location.href='spodl:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
+```
+
+#### Download + translate
+
+```text
+javascript:(()=>{try{const u=new URL(location.href);const v=u.searchParams.get('v');if(!v){alert('Not a YouTube watch page');return;}location.href='spotr:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
+```
+
 ## Configure
 
 Edit `config.yaml`.

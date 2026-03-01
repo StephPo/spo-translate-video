@@ -5,3 +5,4 @@ output/
 temp/
 video_translation.log
 config.local.yaml
+protocol-handler.log
