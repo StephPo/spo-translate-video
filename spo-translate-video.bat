@@ -50,6 +50,7 @@ if not exist ".venv\deps_installed.marker" (
 )
 
 REM Run the app (pass all arguments through)
+set "SPO_LAUNCH_CMD=%~nx0 %*"
 call ".venv\Scripts\python.exe" main.py %*
 set EXIT_CODE=%ERRORLEVEL%
 

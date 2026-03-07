@@ -50,6 +50,7 @@ if not exist ".venv\deps_installed.marker" (
 )
 
 REM Run the app in download-only mode by default (still pass all args through)
+set "SPO_LAUNCH_CMD=%~nx0 %*"
 call ".venv\Scripts\python.exe" main.py --download-only %*
 set EXIT_CODE=%ERRORLEVEL%
 

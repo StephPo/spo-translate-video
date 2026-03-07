@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -50,6 +51,27 @@ def _cache_file_path(subtitles_dir: Path, base: str, target_lang: str) -> Path:
     safe_base = (base or "subtitles").strip() or "subtitles"
     safe_lang = (target_lang or "").strip().lower() or "target"
     return subtitles_dir / f"{safe_base}.{safe_lang}.cache.json"
+
+
+def _format_invocation(argv: Optional[list[str]] = None) -> str:
+    args = argv if argv is not None else sys.argv
+    return " ".join(shlex.quote(str(a)) for a in args)
+
+
+def _fmt_quality(obj: Any) -> str:
+    if not isinstance(obj, dict):
+        return "n/a"
+    try:
+        h = int(obj.get("height") or 0)
+    except Exception:
+        h = 0
+    ext = str(obj.get("ext") or "").strip() or "?"
+    vcodec = str(obj.get("vcodec") or "").strip() or "?"
+    if h <= 0 and ext == "?" and vcodec == "?":
+        return "n/a"
+    if h > 0:
+        return f"{h}p {ext} {vcodec}".strip()
+    return f"{ext} {vcodec}".strip()
 
 
 def _load_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
@@ -365,6 +387,10 @@ def generate_french_subtitles(
 
     downloader = VideoDownloader(config)
 
+    invocation = str(config.get("_runtime", {}).get("invocation") or "").strip()
+    if invocation:
+        print(f"Command: {invocation}")
+
     _clean_temp_directory(config, logger)
 
     out_dir = Path(config.get("output", {}).get("output_directory", "./output"))
@@ -457,6 +483,18 @@ def generate_french_subtitles(
                     "vcodec": str(best_mp4.get("vcodec") or ""),
                 },
             }
+
+            if isinstance(quality_info, dict):
+                best_mp4 = quality_info.get("best_mp4") or {}
+                best_av = quality_info.get("best_available") or {}
+                if best_mp4 or best_av:
+                    print("\nVideo quality:")
+                    if best_mp4:
+                        print(f"- Downloading: {_fmt_quality(best_mp4)}")
+                    if best_av:
+                        print(f"- Best available: {_fmt_quality(best_av)}")
+                    if best_mp4:
+                        print(f"- Best MP4: {_fmt_quality(best_mp4)}")
 
             if quality_info.get("downgraded"):
                 msg = (
@@ -892,6 +930,9 @@ def main():
     config = _load_config_with_local(args.config, args.config_local)
     _setup_logging(config)
 
+    runtime_bucket = config.setdefault("_runtime", {})
+    runtime_bucket["invocation"] = os.environ.get("SPO_LAUNCH_CMD") or _format_invocation()
+
     if (
         not args.dest
         and args.source_type in ["local", "auto"]
@@ -936,23 +977,14 @@ def main():
         print(f"Subtitles: {res['subtitle_path']}")
         print(f"Segments: {res['segments']}")
 
+        invocation = str(config.get("_runtime", {}).get("invocation") or "").strip()
         if isinstance(q, dict) and q:
             downloaded = q.get("downloaded") or {}
             best_av = q.get("best_available") or {}
             best_mp4 = q.get("best_mp4") or {}
 
-            def _fmt_quality(obj: Any) -> str:
-                if not isinstance(obj, dict):
-                    return "n/a"
-                h = int(obj.get("height") or 0)
-                ext = str(obj.get("ext") or "").strip() or "?"
-                vcodec = str(obj.get("vcodec") or "").strip() or "?"
-                if h <= 0 and ext == "?" and vcodec == "?":
-                    return "n/a"
-                if h > 0:
-                    return f"{h}p {ext} {vcodec}".strip()
-                return f"{ext} {vcodec}".strip()
-
+            if invocation:
+                print(f"\nCommand: {invocation}")
             print("\nVideo quality:")
             if downloaded:
                 print(f"- Downloaded: {_fmt_quality(downloaded)}")

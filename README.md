@@ -146,16 +146,16 @@ You can use either the language *codes* (`{source_language}`, `{target_language}
 
 ### From YouTube
 
-```bash
-python main.py "https://www.youtube.com/watch?v=VIDEO_ID"
+```bat
+spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 ### Download only (no transcription / no translation)
 
 Use `--download-only` (alias: `--d`) to only download/prepare the input video and then exit.
 
-```bash
-python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --download-only
+```bat
+spo-dl-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 The downloaded `.mp4` filename is based on the YouTube title (sanitized for Windows).
@@ -173,20 +173,20 @@ Subtitle output rules (when `--dest` is not set):
 
 Use `--dest` to override those destinations for a single run:
 
-```bash
-python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --dest "C:\\Temp"
+```bat
+spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --dest "C:\\Temp"
 ```
 
 ### Local file
 
-```bash
-python main.py "C:\path\to\video.mp4"
+```bat
+spo-translate-video.bat "C:\path\to\video.mp4"
 ```
 
 ### From an .m3u8 URL
 
-```bash
-python main.py "https://example.com/path/stream.m3u8"
+```bat
+spo-translate-video.bat "https://example.com/path/stream.m3u8"
 ```
 
 ## Chapter selection (local files)
@@ -195,14 +195,14 @@ If your local file contains embedded chapters, you can translate only selected c
 
 ### Select chapters by number (1-based)
 
-```bash
-python main.py "C:\path\to\video.mkv" --source-type local --chapters "2,5-6"
+```bat
+spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --chapters "2,5-6"
 ```
 
 ### Auto-select chapters by chapter title
 
-```bash
-python main.py "C:\path\to\video.mkv" --source-type local --autoselectchapters
+```bat
+spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --autoselectchapters
 ```
 
 Auto-select uses `processing.chapter_autoselect_patterns` from `config.yaml` (regex, case-insensitive). Default patterns include chapters starting with `MC`, and chapters named `Intro`/`Outro`.
@@ -211,14 +211,14 @@ Auto-select uses `processing.chapter_autoselect_patterns` from `config.yaml` (re
 
 To verify that your `chapter_autoselect_patterns` match the chapters you expect, you can list chapters and matching status without doing any audio extraction / transcription / translation:
 
-```bash
-python main.py "C:\path\to\video.mkv" --autoselectchapters --listchapters
+```bat
+spo-translate-video.bat "C:\path\to\video.mkv" --autoselectchapters --listchapters
 ```
 
 You can also list chapters and show which ones would be selected by a manual chapter selection:
 
-```bash
-python main.py "C:\path\to\video.mkv" --chapters "2,5-6" --listchapters
+```bat
+spo-translate-video.bat "C:\path\to\video.mkv" --chapters "2,5-6" --listchapters
 ```
 
 ### Combine manual + auto selection
@@ -231,12 +231,12 @@ If translation fails mid-run (for example due to rate limiting), the program wil
 
 Re-run with `--resume` to continue translating from the last completed segment without re-running Whisper/transcription:
 
-```bash
-python main.py "https://www.youtube.com/watch?v=VIDEO_ID" --resume
+```bat
+spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --resume
 ```
 
-```bash
-python main.py "C:\path\to\video.mkv" --source-type local --chapters "2,5-6" --autoselectchapters
+```bat
+spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --chapters "2,5-6" --autoselectchapters
 ```
 
 If you request chapter selection but the file has no chapters (or nothing matches), the program will ask whether to translate the whole file (`y`) or stop.
@@ -295,6 +295,6 @@ You can override these per service (optional) under `translation.deepl` or `tran
 
 You can override them per run with CLI flags:
 
-```bash
-python main.py "C:\path\to\video.mp4" --source-lang en --target-lang fr
+```bat
+spo-translate-video.bat "C:\path\to\video.mp4" --source-lang en --target-lang fr
 ```

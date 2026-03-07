@@ -251,10 +251,8 @@ class VideoDownloader:
     def _progress_hook(self, d):
         """Progress hook for yt-dlp"""
         if d['status'] == 'downloading':
-            percent = d.get('_percent_str', 'N/A').strip()
-            speed = d.get('_speed_str', 'N/A').strip()
-            eta = d.get('_eta_str', 'N/A').strip()
-            self.logger.info(f"Downloading: {percent} at {speed} ETA: {eta}")
+            # yt-dlp already prints its own live progress line; no extra logging needed
+            return
         elif d['status'] == 'finished':
             self.logger.info("Download completed")
         elif d['status'] == 'error':
