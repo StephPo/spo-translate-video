@@ -1,5 +1,7 @@
 import os
 import logging
+import shutil
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any
 import yt_dlp
@@ -17,15 +19,106 @@ class DownloadResult:
     metadata: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
+
+_VT_ENABLED: Optional[bool] = None
+
+
+def _supports_ansi() -> bool:
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    return _enable_windows_vt_processing()
+
+
+def _enable_windows_vt_processing() -> bool:
+    global _VT_ENABLED
+    if _VT_ENABLED is not None:
+        return _VT_ENABLED
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        if handle == 0 or handle == -1:
+            _VT_ENABLED = False
+            return _VT_ENABLED
+
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+            _VT_ENABLED = False
+            return _VT_ENABLED
+
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        if kernel32.SetConsoleMode(handle, new_mode) == 0:
+            _VT_ENABLED = False
+            return _VT_ENABLED
+
+        _VT_ENABLED = True
+        return _VT_ENABLED
+    except Exception:
+        _VT_ENABLED = False
+        return _VT_ENABLED
+
+
+def _yellow(text: str) -> str:
+    if not _supports_ansi():
+        return text
+    return f"\x1b[93m{text}\x1b[0m"
+
+
+class _YtDlpLogger:
+    KEYWORD = "no supported javascript runtime"
+
+    def __init__(self, parent: logging.Logger):
+        self._parent = parent
+        self.js_runtime_warning = False
+
+    def debug(self, msg):
+        self._parent.debug(msg)
+
+    def info(self, msg):
+        self._parent.info(msg)
+
+    def warning(self, msg):
+        if isinstance(msg, str) and self.KEYWORD in msg.lower():
+            self.js_runtime_warning = True
+        self._parent.warning(msg)
+
+    def error(self, msg):
+        self._parent.error(msg)
+
+    def fatal(self, msg):
+        self._parent.error(msg)
+
+    def report_warning(self, msg):
+        self.warning(msg)
+
 class VideoDownloader:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.logger = logging.getLogger(__name__)
+        video_cfg = config.get('video', {})
         self.output_dir = Path(config.get('output', {}).get('output_directory', './output'))
-        self.temp_dir = Path(config.get('video', {}).get('temp_directory', './temp'))
+        self.temp_dir = Path(video_cfg.get('temp_directory', './temp'))
         self.download_dir = Path(config.get('output', {}).get('video_download_directory', str(self.output_dir)))
-        self.ffmpeg_path = str(config.get('video', {}).get('ffmpeg_path') or 'ffmpeg')
-        
+        self.ffmpeg_path = str(video_cfg.get('ffmpeg_path') or 'ffmpeg')
+        self.cookies_path = str(video_cfg.get('youtube_cookies_path') or r"C:\\Temp\\www.youtube.com_cookies.txt")
+        runtime_cfg = video_cfg.get('youtube_js_runtime') or {}
+        runtime_name = str(runtime_cfg.get('runtime') or '').strip().lower()
+        runtime_path = str(runtime_cfg.get('path') or '').strip()
+        self._js_runtime_name = runtime_name
+        self._js_runtime_requested_path = runtime_path
+        self._js_runtime_resolved_path = None
+        self.js_runtimes = self._build_js_runtime(runtime_name, runtime_path)
+        self._warned_js_runtime = False
+        remote_cfg = video_cfg.get('youtube_remote_components') or {}
+        self.remote_components = self._build_remote_components(remote_cfg)
+        self._progress_last_ts = 0.0
+        self._progress_line_len = 0
+
         # Create directories if they don't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -43,6 +136,10 @@ class VideoDownloader:
                 'noplaylist': True,
                 'skip_download': True,
             }
+            if self.js_runtimes:
+                base_opts['js_runtimes'] = self.js_runtimes
+            if self.remote_components:
+                base_opts['remote_components'] = self.remote_components
 
             # What we would download today (MP4-only selection)
             ydl_opts_mp4 = dict(base_opts)
@@ -52,10 +149,15 @@ class VideoDownloader:
             ydl_opts_best = dict(base_opts)
             ydl_opts_best['format'] = 'bestvideo+bestaudio/best'
 
-            with yt_dlp.YoutubeDL(ydl_opts_mp4) as ydl:
+            ydl_logger = _YtDlpLogger(self.logger)
+
+            with yt_dlp.YoutubeDL({**ydl_opts_mp4, 'logger': ydl_logger}) as ydl:
                 info_mp4 = ydl.extract_info(url, download=False)
-            with yt_dlp.YoutubeDL(ydl_opts_best) as ydl:
+            with yt_dlp.YoutubeDL({**ydl_opts_best, 'logger': ydl_logger}) as ydl:
                 info_best = ydl.extract_info(url, download=False)
+
+            if ydl_logger.js_runtime_warning:
+                self._maybe_warn_missing_js_runtime()
 
             mp4_video = self._extract_selected_video_stream(info_mp4)
             best_video = self._extract_selected_video_stream(info_best)
@@ -96,77 +198,84 @@ class VideoDownloader:
     def download_from_youtube(self, url: str) -> DownloadResult:
         """Download video from YouTube"""
         try:
+            ydl_logger = _YtDlpLogger(self.logger)
+
             ydl_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 # Download into temp first so yt-dlp sidecar files (like .info.json) don't pollute the output folder.
                 'outtmpl': str(self.temp_dir / '%(id)s.%(ext)s'),
                 'restrictfilenames': True,
                 'noplaylist': True,
-                'merge_output_format': 'mp4',
                 'writethumbnail': False,
                 'writeinfojson': True,
                 'quiet': False,
                 'no_warnings': False,
                 'progress_hooks': [self._progress_hook],
                 'postprocessors': [],
+                'logger': ydl_logger,
             }
+            if self.js_runtimes:
+                ydl_opts['js_runtimes'] = self.js_runtimes
+            if self.remote_components:
+                ydl_opts['remote_components'] = self.remote_components
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
 
-                video_path = self._extract_final_video_path(info)
-                audio_path = None
+            if ydl_logger.js_runtime_warning:
+                self._maybe_warn_missing_js_runtime()
 
-                requested_downloads = info.get('requested_downloads') or []
-                downloaded_video = None
-                for r in requested_downloads:
-                    if not isinstance(r, dict):
-                        continue
-                    vcodec = r.get('vcodec')
-                    if vcodec and vcodec != 'none':
-                        downloaded_video = r
-                        break
+            video_path = self._extract_final_video_path(info)
+            audio_path = None
 
-                if video_path:
-                    try:
-                        src = Path(video_path)
-                        title = info.get('title') or ''
-                        vid = info.get('id') or src.stem
-                        base_name = self._sanitize_filename(title) or str(vid)
-                        dest = self._resolve_existing_destination(self.download_dir / f"{base_name}{src.suffix}")
-                        if src.exists() and src.parent.resolve() != self.download_dir.resolve():
-                            import shutil
+            requested_downloads = info.get('requested_downloads') or []
+            downloaded_video = None
+            for r in requested_downloads:
+                if not isinstance(r, dict):
+                    continue
+                vcodec = r.get('vcodec')
+                if vcodec and vcodec != 'none':
+                    downloaded_video = r
+                    break
 
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            if dest.exists():
-                                dest.unlink()
-                            shutil.move(str(src), str(dest))
-                            video_path = str(dest)
-                    except Exception as e:
-                        self.logger.warning(f"Failed to move video to download directory: {e}")
+            if video_path:
+                try:
+                    src = Path(video_path)
+                    title = info.get('title') or ''
+                    vid = info.get('id') or src.stem
+                    base_name = self._sanitize_filename(title) or str(vid)
+                    dest = self._resolve_existing_destination(self.download_dir / f"{base_name}{src.suffix}")
+                    if src.exists() and src.parent.resolve() != self.download_dir.resolve():
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.exists():
+                            dest.unlink()
+                        shutil.move(str(src), str(dest))
+                        video_path = str(dest)
+                except Exception as e:
+                    self.logger.warning(f"Failed to move video to download directory: {e}")
 
-                if not video_path or not Path(video_path).exists():
-                    return DownloadResult(success=False, error="Failed to locate downloaded video file")
-                
-                metadata = {
-                    'title': info.get('title', ''),
-                    'duration': info.get('duration', 0),
-                    'uploader': info.get('uploader', ''),
-                    'upload_date': info.get('upload_date', ''),
-                    'description': info.get('description', ''),
-                    'view_count': info.get('view_count', 0),
-                    'like_count': info.get('like_count', 0),
-                    'downloaded_video_height': int((downloaded_video or {}).get('height') or 0),
-                    'downloaded_video_ext': str((downloaded_video or {}).get('ext') or ''),
-                    'downloaded_video_vcodec': str((downloaded_video or {}).get('vcodec') or ''),
-                }
-                
-                return DownloadResult(
-                    success=True,
-                    video_path=video_path,
-                    audio_path=audio_path,
-                    metadata=metadata
-                )
+            if not video_path or not Path(video_path).exists():
+                return DownloadResult(success=False, error="Failed to locate downloaded video file")
+            
+            metadata = {
+                'title': info.get('title', ''),
+                'duration': info.get('duration', 0),
+                'uploader': info.get('uploader', ''),
+                'upload_date': info.get('upload_date', ''),
+                'description': info.get('description', ''),
+                'view_count': info.get('view_count', 0),
+                'like_count': info.get('like_count', 0),
+                'downloaded_video_height': int((downloaded_video or {}).get('height') or 0),
+                'downloaded_video_ext': str((downloaded_video or {}).get('ext') or ''),
+                'downloaded_video_vcodec': str((downloaded_video or {}).get('vcodec') or ''),
+            }
+            
+            return DownloadResult(
+                success=True,
+                video_path=video_path,
+                audio_path=audio_path,
+                metadata=metadata
+            )
                 
         except Exception as e:
             self.logger.error(f"Error downloading from YouTube: {str(e)}")
@@ -251,10 +360,31 @@ class VideoDownloader:
     def _progress_hook(self, d):
         """Progress hook for yt-dlp"""
         if d['status'] == 'downloading':
-            # yt-dlp already prints its own live progress line; no extra logging needed
+            now = time.time()
+            if now - self._progress_last_ts < 0.5:
+                return
+            self._progress_last_ts = now
+
+            downloaded = float(d.get('downloaded_bytes') or 0)
+            total = float(d.get('total_bytes') or d.get('total_bytes_estimate') or 0)
+            pct = (downloaded / total * 100.0) if total > 0 else 0.0
+            downloaded_str = d.get('_downloaded_bytes_str') or f"{downloaded/1_000_000:.2f}MiB"
+            total_str = d.get('_total_bytes_str') or (f"{total/1_000_000:.2f}MiB" if total else "?")
+            speed = d.get('_speed_str') or "?"
+            eta = d.get('_eta_str') or "?"
+            line = f"Downloading: {pct:5.1f}% ({downloaded_str} / {total_str}) at {speed} ETA {eta}"
+            padding = max(0, self._progress_line_len - len(line))
+            sys.stdout.write("\r" + line + (" " * padding))
+            sys.stdout.flush()
+            self._progress_line_len = len(line)
             return
         elif d['status'] == 'finished':
-            self.logger.info("Download completed")
+            if self._progress_line_len:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                self._progress_line_len = 0
+            filename = d.get('filename') or d.get('_filename') or 'unknown file'
+            self.logger.info(f"Download completed: {filename}")
         elif d['status'] == 'error':
             self.logger.error(f"Download error: {d.get('error', 'Unknown error')}")
     
@@ -267,6 +397,57 @@ class VideoDownloader:
             self.logger.info("Temporary files cleaned up")
         except Exception as e:
             self.logger.error(f"Error cleaning up temp files: {str(e)}")
+
+    def _build_js_runtime(self, runtime_name: str, runtime_path: str) -> Dict[str, Dict[str, Any]]:
+        runtime_name = (runtime_name or '').strip().lower()
+        runtime_path = (runtime_path or '').strip()
+        if not runtime_name:
+            return {}
+
+        resolved_path = runtime_path or shutil.which(runtime_name)
+        config: Dict[str, Any] = {}
+        if resolved_path:
+            self._js_runtime_resolved_path = resolved_path
+            config['path'] = resolved_path
+            self.logger.info(
+                f"Enabling JavaScript runtime '{runtime_name}' at {resolved_path}"
+            )
+        else:
+            self.logger.warning(
+                f"{_yellow('WARNING')}: JavaScript runtime '{runtime_name}' was not found in PATH. "
+                "Install Node.js LTS and/or set video.youtube_js_runtime.path to the full node.exe path."
+            )
+            return {}
+
+        return {runtime_name: config}
+
+    def _maybe_warn_missing_js_runtime(self):
+        if self._warned_js_runtime:
+            return
+        self._warned_js_runtime = True
+        location = self._js_runtime_resolved_path or self._js_runtime_requested_path or "(auto)"
+        self.logger.warning(
+            f"{_yellow('WARNING')}: YouTube now requires a JavaScript runtime for yt-dlp challenges. "
+            "Install Node.js LTS and ensure node.exe is on PATH, or set video.youtube_js_runtime.path explicitly. "
+            f"Current setting: {self._js_runtime_name or 'none'} -> {location}"
+        )
+
+    def _build_remote_components(self, remote_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        enabled = remote_cfg.get('enable', True)
+        components = remote_cfg.get('components') or ['ejs:github']
+        if not enabled:
+            return {}
+
+        remotes: Dict[str, Dict[str, Any]] = {}
+        for comp in components:
+            key = str(comp).strip()
+            if not key:
+                continue
+            remotes[key] = {}
+        if remotes:
+            joined = ", ".join(remotes.keys())
+            self.logger.info(f"Enabling yt-dlp remote components: {joined}")
+        return remotes
 
     def _sanitize_filename(self, name: str) -> str:
         if not name:
@@ -322,35 +503,26 @@ class VideoDownloader:
     def _extract_final_video_path(self, info: Dict[str, Any]) -> Optional[str]:
         """Extract the final merged video filepath from yt-dlp info dict."""
         try:
-            requested = info.get('requested_downloads') or []
-            candidates = []
-
-            for r in requested:
-                fp = r.get('filepath') or r.get('_filename')
-                if fp:
-                    candidates.append(fp)
-
-            # If yt-dlp provided direct candidates, prefer an mp4
-            for fp in candidates:
-                if str(fp).lower().endswith('.mp4'):
-                    return str(fp)
-
-            # Fall back to `filepath` / `_filename`
             fp = info.get('filepath') or info.get('_filename')
             if fp:
                 return str(fp)
 
-            # Last resort: try by id in our temp directory
+            requested = info.get('requested_downloads') or []
+            for r in requested:
+                fp = r.get('filepath') or r.get('_filename')
+                if fp:
+                    return str(fp)
+
             vid = info.get('id')
             if vid:
-                guess = self.temp_dir / f"{vid}.mp4"
-                if guess.exists():
-                    return str(guess)
+                pattern = str(self.temp_dir / f"{vid}.*")
+                matches = sorted(Path(self.temp_dir).glob(f"{vid}.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if matches:
+                    return str(matches[0])
 
-            # Last resort: any mp4 in temp (most recently modified)
-            mp4s = sorted(self.temp_dir.glob('*.mp4'), key=lambda p: p.stat().st_mtime, reverse=True)
-            if mp4s:
-                return str(mp4s[0])
+            latest = sorted(self.temp_dir.glob('*.*'), key=lambda p: p.stat().st_mtime, reverse=True)
+            if latest:
+                return str(latest[0])
 
             return None
         except Exception:

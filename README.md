@@ -260,6 +260,37 @@ Example output subtitle:
 - If `processing.clean_temp_on_start: true`, the temp directory is cleaned at the start of each run.
 - YouTube sidecar metadata files (like `.info.json`) are written to the temp folder and cleaned on the next run.
 
+## JavaScript runtime requirement (Node.js)
+
+YouTube now requires yt-dlp to run a JavaScript engine to solve extraction challenges. yt-dlp only auto-enables **Deno**, so on Windows the easiest fix is to install **Node.js LTS** and point the config to it:
+
+```yaml
+video:
+  youtube_js_runtime:
+    runtime: "node"           # required
+    path: ""                  # leave empty if node.exe is on PATH
+  youtube_remote_components:
+    enable: true
+    components:
+      - "ejs:github"          # pulls yt-dlp's challenge solver scripts
+```
+
+If Node is already in `PATH`, leaving `path` empty is enough. Otherwise set it explicitly, e.g. `"C:/Program Files/nodejs/node.exe"`.
+
+If yt-dlp logs `WARNING: [youtube] No supported JavaScript runtime could be found...`, the downloader now echoes an additional warning telling you to install Node.js or update `video.youtube_js_runtime`. Once Node is available, the warning disappears and format extraction succeeds. If yt-dlp warns about skipping the "remote component challenge solver script", make sure `youtube_remote_components` is enabled as above or run with `--remote-components ejs:github`.
+
+### Keep yt-dlp up to date
+
+When YouTube tightens its protections, yt-dlp often ships fixes quickly. Update the copy inside this project’s virtual environment with:
+
+```powershell
+cd c:\Dev\CascadeProjects\spo-translate-video
+.\.venv\Scripts\python -m pip install --upgrade yt-dlp
+.\.venv\Scripts\python -m yt_dlp --version
+```
+
+Run the first command whenever you need the latest solver. The second command confirms which version is active inside the venv that `spo-translate-video` uses.
+
 ## Overwrite behavior
 
 If an output file already exists, the program will ask once per run:

@@ -484,23 +484,21 @@ def generate_french_subtitles(
                 },
             }
 
-            if isinstance(quality_info, dict):
-                best_mp4 = quality_info.get("best_mp4") or {}
-                best_av = quality_info.get("best_available") or {}
-                if best_mp4 or best_av:
-                    print("\nVideo quality:")
-                    if best_mp4:
-                        print(f"- Downloading: {_fmt_quality(best_mp4)}")
-                    if best_av:
-                        print(f"- Best available: {_fmt_quality(best_av)}")
-                    if best_mp4:
-                        print(f"- Best MP4: {_fmt_quality(best_mp4)}")
+            best_av = quality_info.get("best_available") or {}
+            best_mp4_info = quality_info.get("best_mp4") or {}
+            if best_av or best_mp4_info:
+                print("\nVideo quality:")
+                if best_mp4_info:
+                    print(f"- Downloading: {_fmt_quality(best_mp4_info)}")
+                if best_av:
+                    print(f"- Best available: {_fmt_quality(best_av)}")
+                print("\n")            
 
             if quality_info.get("downgraded"):
                 msg = (
                     "Best available quality is higher than what this program will download (MP4-only).\n"
                     f"- Best available: {quality_info['best_available']['height']}p {quality_info['best_available']['ext']} {quality_info['best_available']['vcodec']}\n"
-                    f"- Will download:  {quality_info['best_mp4']['height']}p mp4 {quality_info['best_mp4']['vcodec']}\n"
+                    f"- Will download:  {quality_info['best_mp4']['height']}p {quality_info['best_mp4']['ext'] or 'mp4'} {quality_info['best_mp4']['vcodec']}\n"
                     "Continue anyway? (y/n): "
                 )
                 ans = _timed_input("\n" + _yellow("WARNING") + "\n" + msg, config).strip().lower()
@@ -541,12 +539,33 @@ def generate_french_subtitles(
 
     if source_type == "youtube":
         md = video_result.metadata or {}
-        quality_info.setdefault("downloaded", {})
-        quality_info["downloaded"] = {
+        downloaded_snapshot = {
             "height": int(md.get("downloaded_video_height") or 0),
             "ext": str(md.get("downloaded_video_ext") or ""),
             "vcodec": str(md.get("downloaded_video_vcodec") or ""),
         }
+        quality_info.setdefault("downloaded", {})
+        quality_info["downloaded"] = downloaded_snapshot
+
+        downloaded_height = int(downloaded_snapshot.get("height") or 0)
+        best_available = quality_info.get("best_available") or {}
+        best_available_height = int(best_available.get("height") or 0)
+
+        if best_available_height:
+            is_same_height = downloaded_height == best_available_height
+            same_codec = downloaded_snapshot.get("vcodec") == best_available.get("vcodec")
+            same_ext = downloaded_snapshot.get("ext") == best_available.get("ext")
+            quality_info["downgraded"] = downloaded_height < best_available_height or (
+                is_same_height and not (same_codec and same_ext)
+            )
+        else:
+            quality_info["downgraded"] = False
+
+        if downloaded_snapshot.get("ext") == "mp4":
+            best_mp4 = quality_info.get("best_mp4") or {}
+            best_mp4_height = int(best_mp4.get("height") or 0)
+            if downloaded_height >= best_mp4_height:
+                quality_info["best_mp4"] = dict(downloaded_snapshot)
 
     subtitles_dir = compute_subtitles_dir(source_type, video_path)
     subtitles_dir.mkdir(parents=True, exist_ok=True)

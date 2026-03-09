@@ -133,6 +133,17 @@ video:
   threads: 4
   # Temp directory for processing
   temp_directory: "./temp"
+  # Optional JavaScript runtime for yt-dlp's YouTube challenges
+  youtube_js_runtime:
+    # Runtime name, e.g. "node", "quickjs", "bun". Leave blank to rely on yt-dlp defaults (deno)
+    runtime: "node"
+    # Absolute path to the runtime executable. Leave blank if the runtime is already on PATH.
+    path: ""
+  # Remote challenge solver components for yt-dlp (needed for new YouTube protections)
+  youtube_remote_components:
+    enable: true
+    components:
+      - "ejs:github"
 
 # Processing Settings
 processing:
