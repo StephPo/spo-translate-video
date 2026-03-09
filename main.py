@@ -387,10 +387,6 @@ def generate_french_subtitles(
 
     downloader = VideoDownloader(config)
 
-    invocation = str(config.get("_runtime", {}).get("invocation") or "").strip()
-    if invocation:
-        print(f"Command: {invocation}")
-
     _clean_temp_directory(config, logger)
 
     out_dir = Path(config.get("output", {}).get("output_directory", "./output"))
@@ -470,51 +466,43 @@ def generate_french_subtitles(
         if isinstance(preflight, dict) and not preflight.get("error"):
             best_overall = preflight.get("best_overall") or {}
             best_mp4 = preflight.get("best_mp4") or {}
+            best_overall_height = int(preflight.get("best_overall_height") or 0)
+            best_mp4_height = int(preflight.get("best_mp4_height") or 0)
+
+            prefer_best_any = best_overall_height > best_mp4_height or best_mp4_height == 0
+
             quality_info = {
-                "downgraded": bool(preflight.get("is_downgraded")),
+                "downgraded": prefer_best_any,
+                "prefer_best_any": prefer_best_any,
                 "best_available": {
-                    "height": int(preflight.get("best_overall_height") or 0),
+                    "height": best_overall_height,
                     "ext": str(best_overall.get("ext") or ""),
                     "vcodec": str(best_overall.get("vcodec") or ""),
                 },
                 "best_mp4": {
-                    "height": int(preflight.get("best_mp4_height") or 0),
+                    "height": best_mp4_height,
                     "ext": str(best_mp4.get("ext") or ""),
                     "vcodec": str(best_mp4.get("vcodec") or ""),
                 },
             }
 
-            best_av = quality_info.get("best_available") or {}
             best_mp4_info = quality_info.get("best_mp4") or {}
+            best_av = quality_info.get("best_available") or {}
             if best_av or best_mp4_info:
-                print("\nVideo quality:")
+                print("\nVideo quality (planning):")
+                if prefer_best_any and best_av:
+                    print(f"- Targeting best available: {_fmt_quality(best_av)}")
+                elif best_mp4_info:
+                    print(f"- Targeting MP4: {_fmt_quality(best_mp4_info)}")
                 if best_mp4_info:
-                    print(f"- Downloading: {_fmt_quality(best_mp4_info)}")
+                    print(f"- Best MP4: {_fmt_quality(best_mp4_info)}")
                 if best_av:
                     print(f"- Best available: {_fmt_quality(best_av)}")
-                print("\n")            
-
-            if quality_info.get("downgraded"):
-                msg = (
-                    "Best available quality is higher than what this program will download (MP4-only).\n"
-                    f"- Best available: {quality_info['best_available']['height']}p {quality_info['best_available']['ext']} {quality_info['best_available']['vcodec']}\n"
-                    f"- Will download:  {quality_info['best_mp4']['height']}p {quality_info['best_mp4']['ext'] or 'mp4'} {quality_info['best_mp4']['vcodec']}\n"
-                    "Continue anyway? (y/n): "
-                )
-                ans = _timed_input("\n" + _yellow("WARNING") + "\n" + msg, config).strip().lower()
-                if ans != "y":
-                    timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
-                    timings_seconds["total"] = time.perf_counter() - t0_total
-                    return {
-                        "success": False,
-                        "error": "Aborted by user (not downloading lower-quality MP4)",
-                        "timings_seconds": timings_seconds,
-                        "quality_info": quality_info,
-                    }
 
     t0_download = time.perf_counter()
     if source_type == "youtube":
-        video_result = downloader.download_from_youtube(input_source)
+        prefer_best_any = bool(quality_info.get("prefer_best_any"))
+        video_result = downloader.download_from_youtube(input_source, prefer_best_any_container=prefer_best_any)
         timings_seconds["download"] = time.perf_counter() - t0_download
     elif source_type == "m3u8":
         video_result = downloader.download_from_m3u8(input_source)
@@ -778,6 +766,23 @@ def generate_french_subtitles(
                         all_segments.extend(r.segments)
 
     if not use_cached_transcription:
+        source_lang_code = str(transcribe_lang or "src").strip().lower() or "src"
+        source_backup_path = subtitles_dir / f"{base}.{source_lang_code}.srt.bak"
+        try:
+            original_texts = [str(s.text or "") for s in all_segments]
+            source_cues = build_cues(
+                [s.start_time for s in all_segments],
+                [s.end_time for s in all_segments],
+                original_texts,
+            )
+            if source_cues:
+                write_srt(source_cues, source_backup_path)
+                logger.info(f"Saved Whisper transcript backup: {source_backup_path}")
+            else:
+                logger.info("No non-empty segments available for Whisper transcript backup; skipping")
+        except Exception as exc:
+            logger.warning(f"Failed to write Whisper transcript backup ({source_backup_path}): {exc}")
+
         progress("transcribe", 100, f"Transcribed {len(all_segments)} segments")
         timings_seconds["transcription"] = time.perf_counter() - t0_transcribe
     else:
@@ -949,8 +954,11 @@ def main():
     config = _load_config_with_local(args.config, args.config_local)
     _setup_logging(config)
 
+    invocation = os.environ.get("SPO_LAUNCH_CMD") or _format_invocation()
+    print(f"Command: {invocation}")
+
     runtime_bucket = config.setdefault("_runtime", {})
-    runtime_bucket["invocation"] = os.environ.get("SPO_LAUNCH_CMD") or _format_invocation()
+    runtime_bucket["invocation"] = invocation
 
     if (
         not args.dest

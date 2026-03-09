@@ -195,13 +195,18 @@ class VideoDownloader:
         except Exception:
             return None
     
-    def download_from_youtube(self, url: str) -> DownloadResult:
+    def download_from_youtube(self, url: str, prefer_best_any_container: bool = False) -> DownloadResult:
         """Download video from YouTube"""
         try:
             ydl_logger = _YtDlpLogger(self.logger)
 
+            if prefer_best_any_container:
+                format_selector = 'bestvideo+bestaudio/best'
+            else:
+                format_selector = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'format': format_selector,
                 # Download into temp first so yt-dlp sidecar files (like .info.json) don't pollute the output folder.
                 'outtmpl': str(self.temp_dir / '%(id)s.%(ext)s'),
                 'restrictfilenames': True,
@@ -405,21 +410,24 @@ class VideoDownloader:
             return {}
 
         resolved_path = runtime_path or shutil.which(runtime_name)
-        config: Dict[str, Any] = {}
+        runtime_entry: Dict[str, Any] = {}
         if resolved_path:
             self._js_runtime_resolved_path = resolved_path
-            config['path'] = resolved_path
+            runtime_entry['path'] = resolved_path
             self.logger.info(
                 f"Enabling JavaScript runtime '{runtime_name}' at {resolved_path}"
             )
         else:
-            self.logger.warning(
-                f"{_yellow('WARNING')}: JavaScript runtime '{runtime_name}' was not found in PATH. "
-                "Install Node.js LTS and/or set video.youtube_js_runtime.path to the full node.exe path."
-            )
-            return {}
+            if runtime_path:
+                self.logger.warning(
+                    f"{_yellow('WARNING')}: video.youtube_js_runtime.path was set to '{runtime_path}' but the file does not exist."
+                )
+            else:
+                self.logger.info(
+                    f"Using JavaScript runtime '{runtime_name}' from PATH (no explicit path configured)."
+                )
 
-        return {runtime_name: config}
+        return {runtime_name: runtime_entry}
 
     def _maybe_warn_missing_js_runtime(self):
         if self._warned_js_runtime:
