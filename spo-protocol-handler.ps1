@@ -3,11 +3,29 @@ param(
   [Parameter(Mandatory=$true)][string]$Raw
 )
 
+$ErrorActionPreference = 'Stop'
+
 $RepoDir = $PSScriptRoot
 $Log = Join-Path $RepoDir 'protocol-handler.log'
 
 Add-Content -Path $Log -Value "" -Encoding UTF8
 Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 mode=$Mode raw=$Raw" -Encoding UTF8
+
+$Debug = $false
+try {
+  $Debug = [string]::Equals($env:SPO_PROTOCOL_DEBUG, '1') -or [string]::Equals($env:SPO_PROTOCOL_DEBUG, 'true', [System.StringComparison]::OrdinalIgnoreCase)
+} catch {
+  $Debug = $false
+}
+
+function Finish-Debug([int]$code) {
+  if ($Debug) {
+    Write-Host ""
+    Write-Host "Protocol handler debug mode is enabled (SPO_PROTOCOL_DEBUG=1)."
+    Read-Host "Press Enter to close"
+  }
+  exit $code
+}
 
 function Normalize-Url([string]$value) {
   if ([string]::IsNullOrWhiteSpace($value)) { return '' }
@@ -26,26 +44,36 @@ function Normalize-Url([string]$value) {
   return 'https://www.youtube.com/watch?v=' + $v
 }
 
-$Url = Normalize-Url $Raw
-Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 normalized_url=$Url" -Encoding UTF8
+try {
+  $Url = Normalize-Url $Raw
+  Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 normalized_url=$Url" -Encoding UTF8
+} catch {
+  Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 ERROR normalize_url=$($_.Exception.Message)" -Encoding UTF8
+  Finish-Debug 1
+}
 
 $Runner = if ($Mode -eq 'dl') { 'spo-dl-video.bat' } else { 'spo-translate-video.bat' }
 $RunnerPath = Join-Path $RepoDir $Runner
 if (-not (Test-Path $RunnerPath)) {
   Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 ERROR missing_runner=$RunnerPath" -Encoding UTF8
-  exit 1
+  Finish-Debug 1
 }
 
 $Title = if ($Mode -eq 'dl') { 'SPO Download' } else { 'SPO Translate' }
 
 $wt = (Get-Command wt.exe -ErrorAction SilentlyContinue)
-if ($wt) {
+try {
   $cmdLine = "`"$RunnerPath`" `"$Url`""
-  Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 launching=wt cmd=$cmdLine" -Encoding UTF8
-  # Avoid --title (not supported on all wt versions and can be misparsed). Always launch cmd.exe explicitly.
-  Start-Process -FilePath $wt.Source -ArgumentList @('cmd.exe', '/k', $cmdLine) | Out-Null
-} else {
-  $cmdLine = "`"$RunnerPath`" `"$Url`""
-  Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 launching=cmd cmd=$cmdLine" -Encoding UTF8
-  Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', $cmdLine) | Out-Null
+  if ($wt) {
+    Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 launching=wt exe=$($wt.Source) cmd=$cmdLine" -Encoding UTF8
+    Start-Process -FilePath $wt.Source -ArgumentList @('cmd.exe', '/k', $cmdLine) | Out-Null
+  } else {
+    Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 launching=cmd cmd=$cmdLine" -Encoding UTF8
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/k', $cmdLine) | Out-Null
+  }
+} catch {
+  Add-Content -Path $Log -Value "[$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss,ff')] ps1 ERROR launch=$($_.Exception.Message)" -Encoding UTF8
+  Finish-Debug 1
 }
+
+Finish-Debug 0

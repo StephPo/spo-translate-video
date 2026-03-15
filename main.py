@@ -185,27 +185,61 @@ def _load_config_with_local(config_path: str, local_config_path: Optional[str]) 
 
 
 def _clean_temp_directory(config: Dict[str, Any], logger: logging.Logger):
-    if not config.get("processing", {}).get("clean_temp_on_start", False):
-        return
+    return
 
-    temp_dir = Path(config.get("video", {}).get("temp_directory", "./temp"))
-    if not temp_dir.exists():
-        return
 
+def _prune_temp_runs(base_temp_dir: Path, logger: logging.Logger, keep_days: int = 2) -> None:
     try:
-        deleted = 0
-        for p in temp_dir.glob("*"):
-            if p.is_file():
-                p.unlink()
-                deleted += 1
-            elif p.is_dir():
-                import shutil
+        if keep_days <= 0:
+            return
+        if not base_temp_dir.exists():
+            return
 
-                shutil.rmtree(p)
+        cutoff = time.time() - (keep_days * 24 * 60 * 60)
+        deleted = 0
+        import shutil
+
+        for p in base_temp_dir.glob("run_*"):
+            try:
+                if not p.is_dir():
+                    continue
+                if p.stat().st_mtime >= cutoff:
+                    continue
+                shutil.rmtree(p, ignore_errors=True)
                 deleted += 1
-        logger.info(f"Cleaned temp directory on start: {temp_dir} ({deleted} entries)")
+            except Exception:
+                continue
+
+        if deleted:
+            logger.info(f"Pruned temp run directories older than {keep_days} days: {deleted} removed")
     except Exception as e:
-        logger.warning(f"Failed to clean temp directory '{temp_dir}': {e}")
+        logger.warning(f"Failed to prune temp run directories in '{base_temp_dir}': {e}")
+
+
+def _create_run_temp_dir(config: Dict[str, Any], logger: logging.Logger) -> Path:
+    base_temp_dir = Path(config.get("video", {}).get("temp_directory", "./temp"))
+    base_temp_dir.mkdir(parents=True, exist_ok=True)
+
+    keep_days = int(config.get("processing", {}).get("temp_keep_days", 2) or 2)
+    _prune_temp_runs(base_temp_dir, logger, keep_days=keep_days)
+
+    run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+    run_temp_dir = base_temp_dir / run_id
+    run_temp_dir.mkdir(parents=True, exist_ok=True)
+    config.setdefault("_runtime", {})["run_temp_dir"] = str(run_temp_dir)
+    config.setdefault("video", {})["temp_directory"] = str(run_temp_dir)
+    logger.info(f"Using per-run temp directory: {run_temp_dir}")
+    return run_temp_dir
+
+
+def _cleanup_run_temp_dir(run_temp_dir: Path, logger: logging.Logger) -> None:
+    try:
+        import shutil
+
+        shutil.rmtree(run_temp_dir, ignore_errors=True)
+        logger.info(f"Cleaned per-run temp directory: {run_temp_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to clean per-run temp directory '{run_temp_dir}': {e}")
 
 
 def _timed_input(prompt: str, config: Optional[Dict[str, Any]] = None) -> str:
@@ -385,9 +419,9 @@ def generate_french_subtitles(
         if show_progress:
             _print_progress(Progress(stage=stage, percent=percent, message=message))
 
-    downloader = VideoDownloader(config)
+    run_temp_dir = _create_run_temp_dir(config, logger)
 
-    _clean_temp_directory(config, logger)
+    downloader = VideoDownloader(config)
 
     out_dir = Path(config.get("output", {}).get("output_directory", "./output"))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -402,6 +436,11 @@ def generate_french_subtitles(
 
     progress("input", 0, "Loading video...")
     if dry_run:
+        try:
+            import shutil
+            shutil.rmtree(run_temp_dir, ignore_errors=True)
+        except Exception:
+            pass
         if source_type == "auto":
             if input_source.startswith(("http://", "https://")):
                 source_type = "m3u8" if input_source.lower().split("?", 1)[0].endswith(".m3u8") else "youtube"
@@ -539,13 +578,8 @@ def generate_french_subtitles(
         best_available = quality_info.get("best_available") or {}
         best_available_height = int(best_available.get("height") or 0)
 
-        if best_available_height:
-            is_same_height = downloaded_height == best_available_height
-            same_codec = downloaded_snapshot.get("vcodec") == best_available.get("vcodec")
-            same_ext = downloaded_snapshot.get("ext") == best_available.get("ext")
-            quality_info["downgraded"] = downloaded_height < best_available_height or (
-                is_same_height and not (same_codec and same_ext)
-            )
+        if best_available_height and downloaded_height:
+            quality_info["downgraded"] = downloaded_height < best_available_height
         else:
             quality_info["downgraded"] = False
 
@@ -599,6 +633,7 @@ def generate_french_subtitles(
 
         timings_seconds["total"] = time.perf_counter() - t0_total
         timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
+        _cleanup_run_temp_dir(run_temp_dir, logger)
         return {
             "success": True,
             "video_path": str(video_path),
@@ -644,6 +679,7 @@ def generate_french_subtitles(
                 )
 
             timings_seconds["total"] = time.perf_counter() - t0_total
+            _cleanup_run_temp_dir(run_temp_dir, logger)
             return {
                 "success": True,
                 "video_path": str(video_path),
@@ -909,6 +945,8 @@ def generate_french_subtitles(
     timings_seconds["total"] = time.perf_counter() - t0_total
     timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
 
+    _cleanup_run_temp_dir(run_temp_dir, logger)
+
     return {
         "success": True,
         "video_path": str(video_path),
@@ -918,6 +956,8 @@ def generate_french_subtitles(
         "timings_seconds": timings_seconds,
         "quality_info": quality_info,
     }
+
+    
 
 
 def main():
