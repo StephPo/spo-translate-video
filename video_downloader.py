@@ -71,10 +71,16 @@ def _yellow(text: str) -> str:
 
 class _YtDlpLogger:
     KEYWORD = "no supported javascript runtime"
+    JS_CHALLENGE_KEYWORDS = (
+        "js challenge provider",
+        "signature solving failed",
+        "n challenge solving failed",
+    )
 
     def __init__(self, parent: logging.Logger):
         self._parent = parent
         self.js_runtime_warning = False
+        self.js_challenge_warning = False
 
     def debug(self, msg):
         self._parent.debug(msg)
@@ -83,8 +89,12 @@ class _YtDlpLogger:
         self._parent.info(msg)
 
     def warning(self, msg):
-        if isinstance(msg, str) and self.KEYWORD in msg.lower():
-            self.js_runtime_warning = True
+        if isinstance(msg, str):
+            lower = msg.lower()
+            if self.KEYWORD in lower:
+                self.js_runtime_warning = True
+            if any(k in lower for k in self.JS_CHALLENGE_KEYWORDS):
+                self.js_challenge_warning = True
         self._parent.warning(msg)
 
     def error(self, msg):
@@ -114,6 +124,7 @@ class VideoDownloader:
         self._js_runtime_resolved_path = None
         self.js_runtimes = self._build_js_runtime(runtime_name, runtime_path)
         self._warned_js_runtime = False
+        self._warned_js_challenge = False
         remote_cfg = video_cfg.get('youtube_remote_components') or {}
         self.remote_components = self._build_remote_components(remote_cfg)
         self._progress_last_ts = 0.0
@@ -158,6 +169,8 @@ class VideoDownloader:
 
             if ydl_logger.js_runtime_warning:
                 self._maybe_warn_missing_js_runtime()
+            if ydl_logger.js_challenge_warning:
+                self._maybe_warn_js_challenge_issue()
 
             mp4_video = self._extract_selected_video_stream(info_mp4)
             best_video = self._extract_selected_video_stream(info_best)
@@ -229,6 +242,8 @@ class VideoDownloader:
 
             if ydl_logger.js_runtime_warning:
                 self._maybe_warn_missing_js_runtime()
+            if ydl_logger.js_challenge_warning:
+                self._maybe_warn_js_challenge_issue()
 
             video_path = self._extract_final_video_path(info)
             audio_path = None
@@ -438,6 +453,16 @@ class VideoDownloader:
             f"{_yellow('WARNING')}: YouTube now requires a JavaScript runtime for yt-dlp challenges. "
             "Install Node.js LTS and ensure node.exe is on PATH, or set video.youtube_js_runtime.path explicitly. "
             f"Current setting: {self._js_runtime_name or 'none'} -> {location}"
+        )
+
+    def _maybe_warn_js_challenge_issue(self):
+        if self._warned_js_challenge:
+            return
+        self._warned_js_challenge = True
+        self.logger.warning(
+            f"{_yellow('WARNING')}: yt-dlp could not solve a YouTube JavaScript challenge for this video. "
+            "Download may be limited or fail. Try updating yt-dlp in this project venv with: "
+            r".\.venv\Scripts\python.exe -m pip install -U yt-dlp"
         )
 
     def _build_remote_components(self, remote_cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

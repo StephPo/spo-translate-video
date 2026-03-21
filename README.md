@@ -77,13 +77,13 @@ They:
 #### Download only
 
 ```text
-javascript:(()=>{try{const u=new URL(location.href);const v=u.searchParams.get('v');if(!v){alert('Not a YouTube watch page');return;}location.href='spodl:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
+javascript:(()=>{try{const u=new URL(location.href);let v=u.searchParams.get('v');if(!v&&u.hostname.includes('youtu.be'))v=u.pathname.split('/').filter(Boolean)[0]||'';if(!v&&u.pathname.startsWith('/shorts/'))v=u.pathname.split('/')[2]||'';if(!v){alert('Not a supported YouTube page (watch, shorts, youtu.be)');return;}location.href='spodl:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
 ```
 
 #### Download + translate
 
 ```text
-javascript:(()=>{try{const u=new URL(location.href);const v=u.searchParams.get('v');if(!v){alert('Not a YouTube watch page');return;}location.href='spotr:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
+javascript:(()=>{try{const u=new URL(location.href);let v=u.searchParams.get('v');if(!v&&u.hostname.includes('youtu.be'))v=u.pathname.split('/').filter(Boolean)[0]||'';if(!v&&u.pathname.startsWith('/shorts/'))v=u.pathname.split('/')[2]||'';if(!v){alert('Not a supported YouTube page (watch, shorts, youtu.be)');return;}location.href='spotr:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
 ```
 
 ## Configure
