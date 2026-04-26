@@ -497,97 +497,122 @@ def generate_french_subtitles(
     if target_lang:
         config.setdefault("translation", {})["target_language"] = target_lang
 
+    # --resume: if we can locate an existing cache deterministically, skip re-download.
+    # Prefer output_basename (stable), otherwise fall back to the newest cache in the subtitles dir.
+    skip_download = False
+    video_path: Optional[Path] = None
+    title = ""
     quality_info: Dict[str, Any] = {}
-    if source_type == "youtube":
-        t0_meta = time.perf_counter()
-        preflight = downloader.preflight_youtube_quality(input_source)
-        timings_seconds["metadata"] = time.perf_counter() - t0_meta
-        if isinstance(preflight, dict) and not preflight.get("error"):
-            best_overall = preflight.get("best_overall") or {}
-            best_mp4 = preflight.get("best_mp4") or {}
-            best_overall_height = int(preflight.get("best_overall_height") or 0)
-            best_mp4_height = int(preflight.get("best_mp4_height") or 0)
+    if resume:
+        tgt_resume = str(config.get("translation", {}).get("target_language", "fr")).strip().lower() or "fr"
+        subtitles_dir_resume = compute_subtitles_dir(source_type, None)
 
-            prefer_best_any = best_overall_height > best_mp4_height or best_mp4_height == 0
+        cache_path_resume: Optional[Path] = None
+        if output_basename:
+            cache_path_resume = _cache_file_path(subtitles_dir_resume, output_basename, tgt_resume)
+        else:
+            # Heuristic: pick the newest cache for this target language.
+            candidates = sorted(
+                subtitles_dir_resume.glob(f"*.{tgt_resume}.cache.json"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True,
+            )
+            if candidates:
+                cache_path_resume = candidates[0]
 
-            quality_info = {
-                "downgraded": prefer_best_any,
-                "prefer_best_any": prefer_best_any,
-                "best_available": {
-                    "height": best_overall_height,
-                    "ext": str(best_overall.get("ext") or ""),
-                    "vcodec": str(best_overall.get("vcodec") or ""),
-                },
-                "best_mp4": {
-                    "height": best_mp4_height,
-                    "ext": str(best_mp4.get("ext") or ""),
-                    "vcodec": str(best_mp4.get("vcodec") or ""),
-                },
+        cache_resume = _load_cache(cache_path_resume) if cache_path_resume else None
+        cached_video_path_resume = (cache_resume or {}).get("video_path")
+        if isinstance(cached_video_path_resume, str):
+            candidate = Path(cached_video_path_resume)
+            if candidate.exists():
+                skip_download = True
+                video_path = candidate
+                title = candidate.stem
+                # keep timings consistent
+                timings_seconds["metadata"] = 0.0
+                timings_seconds["download"] = 0.0
+
+    if not skip_download:
+        if source_type == "youtube":
+            t0_meta = time.perf_counter()
+            preflight = downloader.preflight_youtube_quality(input_source)
+            timings_seconds["metadata"] = time.perf_counter() - t0_meta
+            if isinstance(preflight, dict) and not preflight.get("error"):
+                best_overall = preflight.get("best_overall") or {}
+                best_mp4 = preflight.get("best_mp4") or {}
+                best_overall_height = int(preflight.get("best_overall_height") or 0)
+                best_mp4_height = int(preflight.get("best_mp4_height") or 0)
+
+                prefer_best_any = best_overall_height > best_mp4_height or best_mp4_height == 0
+
+                quality_info = {
+                    "downgraded": prefer_best_any,
+                    "prefer_best_any": prefer_best_any,
+                    "best_available": {
+                        "height": best_overall_height,
+                        "ext": str(best_overall.get("ext") or ""),
+                        "vcodec": str(best_overall.get("vcodec") or ""),
+                    },
+                    "best_mp4": {
+                        "height": best_mp4_height,
+                        "ext": str(best_mp4.get("ext") or ""),
+                        "vcodec": str(best_mp4.get("vcodec") or ""),
+                    },
+                }
+
+                best_mp4_info = quality_info.get("best_mp4") or {}
+                best_av = quality_info.get("best_available") or {}
+                if best_av or best_mp4_info:
+                    print("\nVideo quality (planning):")
+                    if prefer_best_any and best_av:
+                        print(f"- Targeting best available: {_fmt_quality(best_av)}")
+                    elif best_mp4_info:
+                        print(f"- Targeting MP4: {_fmt_quality(best_mp4_info)}")
+                    if best_mp4_info:
+                        print(f"- Best MP4: {_fmt_quality(best_mp4_info)}")
+                    if best_av:
+                        print(f"- Best available: {_fmt_quality(best_av)}")
+
+        t0_download = time.perf_counter()
+        if source_type == "youtube":
+            prefer_best_any = bool(quality_info.get("prefer_best_any"))
+            video_result = downloader.download_from_youtube(input_source, prefer_best_any_container=prefer_best_any)
+            timings_seconds["download"] = time.perf_counter() - t0_download
+        elif source_type == "m3u8":
+            video_result = downloader.download_from_m3u8(input_source)
+            timings_seconds["download"] = time.perf_counter() - t0_download
+        elif source_type == "local":
+            video_result = downloader.process_local_file(input_source)
+        else:
+            return {"success": False, "error": f"Unsupported source type: {source_type}"}
+
+        if not video_result.success or not video_result.video_path:
+            timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
+            return {
+                "success": False,
+                "error": video_result.error or "Failed to load video",
+                "timings_seconds": timings_seconds,
+                "quality_info": quality_info,
             }
 
-            best_mp4_info = quality_info.get("best_mp4") or {}
-            best_av = quality_info.get("best_available") or {}
-            if best_av or best_mp4_info:
-                print("\nVideo quality (planning):")
-                if prefer_best_any and best_av:
-                    print(f"- Targeting best available: {_fmt_quality(best_av)}")
-                elif best_mp4_info:
-                    print(f"- Targeting MP4: {_fmt_quality(best_mp4_info)}")
-                if best_mp4_info:
-                    print(f"- Best MP4: {_fmt_quality(best_mp4_info)}")
-                if best_av:
-                    print(f"- Best available: {_fmt_quality(best_av)}")
+        video_path = Path(video_result.video_path)
+        title = (video_result.metadata or {}).get("title") or video_path.stem
+        progress("input", 100, f"Video ready: {title}")
 
-    t0_download = time.perf_counter()
-    if source_type == "youtube":
-        prefer_best_any = bool(quality_info.get("prefer_best_any"))
-        video_result = downloader.download_from_youtube(input_source, prefer_best_any_container=prefer_best_any)
-        timings_seconds["download"] = time.perf_counter() - t0_download
-    elif source_type == "m3u8":
-        video_result = downloader.download_from_m3u8(input_source)
-        timings_seconds["download"] = time.perf_counter() - t0_download
-    elif source_type == "local":
-        video_result = downloader.process_local_file(input_source)
+        if source_type == "youtube":
+            md = video_result.metadata or {}
+            downloaded_snapshot = {
+                "height": int(md.get("downloaded_video_height") or 0),
+                "ext": str(md.get("downloaded_video_ext") or ""),
+                "vcodec": str(md.get("downloaded_video_vcodec") or ""),
+            }
+            quality_info.setdefault("downloaded", {})
+            quality_info["downloaded"] = downloaded_snapshot
     else:
-        return {"success": False, "error": f"Unsupported source type: {source_type}"}
-
-    if not video_result.success or not video_result.video_path:
-        timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
-        return {
-            "success": False,
-            "error": video_result.error or "Failed to load video",
-            "timings_seconds": timings_seconds,
-            "quality_info": quality_info,
-        }
-
-    video_path = Path(video_result.video_path)
-    title = (video_result.metadata or {}).get("title") or video_path.stem
-    progress("input", 100, f"Video ready: {title}")
-
-    if source_type == "youtube":
-        md = video_result.metadata or {}
-        downloaded_snapshot = {
-            "height": int(md.get("downloaded_video_height") or 0),
-            "ext": str(md.get("downloaded_video_ext") or ""),
-            "vcodec": str(md.get("downloaded_video_vcodec") or ""),
-        }
-        quality_info.setdefault("downloaded", {})
-        quality_info["downloaded"] = downloaded_snapshot
-
-        downloaded_height = int(downloaded_snapshot.get("height") or 0)
-        best_available = quality_info.get("best_available") or {}
-        best_available_height = int(best_available.get("height") or 0)
-
-        if best_available_height and downloaded_height:
-            quality_info["downgraded"] = downloaded_height < best_available_height
-        else:
-            quality_info["downgraded"] = False
-
-        if downloaded_snapshot.get("ext") == "mp4":
-            best_mp4 = quality_info.get("best_mp4") or {}
-            best_mp4_height = int(best_mp4.get("height") or 0)
-            if downloaded_height >= best_mp4_height:
-                quality_info["best_mp4"] = dict(downloaded_snapshot)
+        # Resumed without re-downloading.
+        progress("input", 100, f"Video ready (cached): {title}")
+        # We don't have fresh metadata/preflight when resuming from cache; keep quality_info minimal.
+        quality_info.setdefault("downgraded", False)
 
     subtitles_dir = compute_subtitles_dir(source_type, video_path)
     subtitles_dir.mkdir(parents=True, exist_ok=True)
@@ -861,20 +886,57 @@ def generate_french_subtitles(
     ):
         translated_texts = [str(x) for x in cached_translated_texts]
 
-    for i, seg in enumerate(all_segments):
-        if i < len(translated_texts):
-            continue
+    # Check if translator supports batching
+    service = config.get('translation', {}).get('service', '').lower()
+    if service == 'openai' and hasattr(translator, 'batch_size') and translator.batch_size > 1:
+        # Batched translation for OpenAI
+        batch_size = translator.batch_size
+        i = len(translated_texts)
+        while i < len(all_segments):
+            batch_end = min(i + batch_size, len(all_segments))
+            batch = [seg.text for seg in all_segments[i:batch_end]]
+            progress("translate", 100.0 * (i / max(1, len(all_segments))), f"Translating batch {i+1}-{batch_end}/{len(all_segments)}")
+            try:
+                r = translator.translate_segments(batch, source_lang_eff, target_lang_eff)
+            except Exception as e:
+                r = None
+                err = str(e)
+            else:
+                err = r.error if r and not r.success else None
 
-        progress("translate", 100.0 * (i / max(1, len(all_segments))), f"Segment {i+1}/{len(all_segments)}")
-        try:
-            r = translator.translate(seg.text, source_lang_eff, target_lang_eff)
-        except Exception as e:
-            r = None
-            err = str(e)
-        else:
-            err = r.error if r and not r.success else None
+            if not r or not r.success or not r.segments:
+                _save_cache(
+                    cache_path,
+                    {
+                        "video_path": str(video_path),
+                        "segments": [
+                            {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
+                            for s in all_segments
+                        ],
+                        "translated_texts": translated_texts,
+                        "failed_at_index": i,
+                        "failed_text": batch[0] if batch else "",
+                        "error": err or "Translation failed",
+                    },
+                )
+                _print_fatal_error_block(
+                    "\n".join(
+                        [
+                            f"Failed to translate batch starting at segment {i+1}/{len(all_segments)} after retries.",
+                            f"Service: {service}",
+                            f"Error: {err or 'Translation failed'}",
+                            f"Cache saved: {cache_path}",
+                            "To resume from this point, re-run with: --resume",
+                        ]
+                    ),
+                )
+                timings_seconds["total"] = time.perf_counter() - t0_total
+                return {"success": False, "error": err or "Translation failed", "timings_seconds": timings_seconds}
 
-        if not r or not r.success or not r.segments:
+            # Extract translations in order
+            for seg in r.segments:
+                translated_texts.append(seg.translated_text)
+
             _save_cache(
                 cache_path,
                 {
@@ -884,39 +946,65 @@ def generate_french_subtitles(
                         for s in all_segments
                     ],
                     "translated_texts": translated_texts,
-                    "failed_at_index": i,
-                    "failed_text": seg.text,
-                    "error": err or "Translation failed",
                 },
             )
-            _print_fatal_error_block(
-                "\n".join(
-                    [
-                        f"Failed to translate segment {i+1}/{len(all_segments)} after retries.",
-                        f"Service: {config.get('translation', {}).get('service', '')}",
-                        f"Error: {err or 'Translation failed'}",
-                        f"Cache saved: {cache_path}",
-                        "To resume from this point, re-run with: --resume",
-                    ]
-                )
-            )
-            timings_seconds["translation"] = time.perf_counter() - t0_translate
-            timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
-            timings_seconds["total"] = time.perf_counter() - t0_total
-            return {"success": False, "error": err or "Translation failed", "timings_seconds": timings_seconds}
+            i = batch_end
+    else:
+        # Fallback to per-segment translation
+        for i, seg in enumerate(all_segments):
+            if i < len(translated_texts):
+                continue
 
-        translated_texts.append(r.segments[0].translated_text)
-        _save_cache(
-            cache_path,
-            {
-                "video_path": str(video_path),
-                "segments": [
-                    {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                    for s in all_segments
-                ],
-                "translated_texts": translated_texts,
-            },
-        )
+            progress("translate", 100.0 * (i / max(1, len(all_segments))), f"Segment {i+1}/{len(all_segments)}")
+            try:
+                r = translator.translate(seg.text, source_lang_eff, target_lang_eff)
+            except Exception as e:
+                r = None
+                err = str(e)
+            else:
+                err = r.error if r and not r.success else None
+
+            if not r or not r.success or not r.segments:
+                _save_cache(
+                    cache_path,
+                    {
+                        "video_path": str(video_path),
+                        "segments": [
+                            {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
+                            for s in all_segments
+                        ],
+                        "translated_texts": translated_texts,
+                        "failed_at_index": i,
+                        "failed_text": seg.text,
+                        "error": err or "Translation failed",
+                    },
+                )
+                _print_fatal_error_block(
+                    "\n".join(
+                        [
+                            f"Failed to translate segment {i+1}/{len(all_segments)} after retries.",
+                            f"Service: {service}",
+                            f"Error: {err or 'Translation failed'}",
+                            f"Cache saved: {cache_path}",
+                            "To resume from this point, re-run with: --resume",
+                        ]
+                    ),
+                )
+                timings_seconds["total"] = time.perf_counter() - t0_total
+                return {"success": False, "error": err or "Translation failed", "timings_seconds": timings_seconds}
+
+            translated_texts.append(r.segments[0].translated_text)
+            _save_cache(
+                cache_path,
+                {
+                    "video_path": str(video_path),
+                    "segments": [
+                        {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
+                        for s in all_segments
+                    ],
+                    "translated_texts": translated_texts,
+                },
+            )
 
     progress("translate", 100, f"Translated {len(translated_texts)} segments")
     timings_seconds["translation"] = time.perf_counter() - t0_translate

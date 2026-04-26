@@ -20,11 +20,11 @@ output:
 # Translation Settings
 translation:
   # Service: "google_translate", "deepl", "azure", "openai"
-  service: "deepl"
+  service: "openai"
   retry:
-    max_retries: 5
-    initial_delay_seconds: 1.0
-    max_delay_seconds: 30.0
+    max_retries: 8
+    initial_delay_seconds: 2.0
+    max_delay_seconds: 60.0
     backoff_multiplier: 2.0
     jitter_ratio: 0.2
   # Source language
@@ -46,13 +46,21 @@ translation:
   preserve_formatting: true
   # Custom translation prompts
   custom_prompts:
-    enable: false
-    system_prompt: "Translate the following {source_language_name} text to natural, fluent {target_language_name}. Preserve the original meaning and tone."
+    enable: true
+    system_prompt: >
+      You are a professional subtitle translator.
+      Translate {source_language_name} to natural {target_language_name}.
+      Preserve intent, tone, politeness level, and speaker attitude.
+      Resolve implied subjects from context when possible.
+      Keep proper nouns and honorific nuance consistent.
+      Output subtitle-ready text, concise and readable.
+      When given multiple numbered lines, reply with the same number of lines, each on its own line, preserving order.
     user_prompt_template: "{text}"
 
   # OpenAI-specific options (only used if service: "openai")
   openai:
-    model: "gpt-4o-mini"  
+    model: "gpt-4o"
+    batch_size: 10  
 
 input:
   # Supported sources: "youtube", "local_file"
@@ -86,9 +94,9 @@ speech_recognition:
   # Enable speaker diarization (true/false)
   enable_diarization: false
   # Maximum segment length (seconds)
-  max_segment_length: 30
+  max_segment_length: 45
   # Confidence threshold (0.0-1.0)
-  confidence_threshold: 0.5
+  confidence_threshold: 0.2
 
 # Text-to-Speech (French)
 tts:

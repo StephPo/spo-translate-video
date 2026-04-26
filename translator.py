@@ -1,6 +1,7 @@
 import os
 import logging
 import random
+import re
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
@@ -431,6 +432,7 @@ class OpenAITranslator(Translator):
             or self.translation_config.get('openai_model')
             or "gpt-4o-mini"
         )
+        self.batch_size = int(openai_cfg.get('batch_size', 1))
         
         # Custom prompts
         self.custom_prompts = self.translation_config.get('custom_prompts', {})
@@ -527,9 +529,7 @@ class OpenAITranslator(Translator):
             )
             
             translated_text = response.choices[0].message.content.strip()
-            
             processing_time = time.time() - start_time
-            
             return TranslationResult(
                 success=True,
                 segments=[TranslationSegment(
@@ -537,66 +537,145 @@ class OpenAITranslator(Translator):
                     translated_text=translated_text,
                     source_language=source_lang,
                     target_language=target_lang,
-                    confidence=0.9,  # OpenAI doesn't provide confidence scores
-                    processing_time=processing_time
+                    confidence=1.0,
+                    processing_time=processing_time,
                 )],
                 full_translated_text=translated_text,
-                total_processing_time=processing_time
+                total_processing_time=processing_time,
             )
-                
-        except ImportError:
-            return TranslationResult(
-                success=False, 
-                error="OpenAI library not installed. Install with: pip install openai"
-            )
+            
         except Exception as e:
             self.logger.error(f"OpenAI translation error: {str(e)}")
             return TranslationResult(success=False, error=str(e))
-    
-    def translate_segments(self, segments: List[str], source_lang: str, target_lang: str) -> TranslationResult:
-        """Translate multiple text segments"""
+
+    def batch_translate(self, texts: List[str], source_lang: str, target_lang: str) -> TranslationResult:
+        """Translate multiple texts in one request using OpenAI."""
         start_time = time.time()
-        translation_segments = []
-        full_translated_text = ""
-        
+
+        if not self.api_key:
+            return TranslationResult(success=False, error="OpenAI API key not configured")
+
+        if not texts:
+            return TranslationResult(success=True, segments=[], full_translated_text="", total_processing_time=0.0)
+
         try:
-            for i, segment in enumerate(segments):
-                if not segment.strip():
-                    continue
-                
-                self.logger.info(f"Translating segment {i+1}/{len(segments)} with OpenAI")
-                
-                result = self.translate(segment, source_lang, target_lang)
-                
-                if result.success and result.segments:
-                    translation_segment = result.segments[0]
-                    translation_segments.append(translation_segment)
-                    full_translated_text += translation_segment.translated_text + " "
+            import openai
+
+            client = openai.OpenAI(api_key=self.api_key)
+
+            numbered_texts = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
+            ctx = _SafeDict(
+                text=numbered_texts,
+                source_language=source_lang,
+                target_language=target_lang,
+                source_language_name=_lang_name(source_lang),
+                target_language_name=_lang_name(target_lang),
+            )
+
+            system_prompt = str(self.system_prompt).format_map(ctx)
+            user_prompt = str(self.user_prompt_template).format_map(ctx)
+
+            messages = [
+                {"role": "system", "content": f"{system_prompt} Translate from {source_lang} to {target_lang}."},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            retry_cfg = _merged_retry_config(self.config, 'openai')
+            max_retries = int(retry_cfg.get('max_retries', 5))
+            initial_delay_seconds = float(retry_cfg.get('initial_delay_seconds', 1.0))
+            max_delay_seconds = float(retry_cfg.get('max_delay_seconds', 30.0))
+            backoff_multiplier = float(retry_cfg.get('backoff_multiplier', 2.0))
+            jitter_ratio = float(retry_cfg.get('jitter_ratio', 0.2))
+
+            def _is_retryable(e: Exception) -> bool:
+                try:
+                    if isinstance(e, (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError)):
+                        return True
+                    if isinstance(e, openai.InternalServerError):
+                        return True
+                    if isinstance(e, openai.APIStatusError):
+                        return getattr(e, 'status_code', None) in (408, 429, 500, 502, 503, 504)
+                except Exception:
+                    pass
+                return False
+
+            def _retry_after(e: Exception) -> Optional[float]:
+                try:
+                    headers = getattr(e, 'response', None)
+                    if headers is not None:
+                        ra = getattr(headers, 'headers', None)
+                        if ra is not None:
+                            val = ra.get('Retry-After')
+                            if val is not None:
+                                return float(val)
+                except Exception:
+                    return None
+                return None
+
+            def _op():
+                return client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=4000,
+                )
+
+            response = _retry_with_backoff(
+                logger=self.logger,
+                max_retries=max_retries,
+                initial_delay_seconds=initial_delay_seconds,
+                max_delay_seconds=max_delay_seconds,
+                backoff_multiplier=backoff_multiplier,
+                jitter_ratio=jitter_ratio,
+                is_retryable=_is_retryable,
+                get_retry_after_seconds=_retry_after,
+                op=_op,
+            )
+
+            content = response.choices[0].message.content.strip()
+            lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+
+            out: List[str] = []
+            for ln in lines:
+                m = re.match(r'^\s*(\d+)[\.\)]\s*(.*)$', ln)
+                if m:
+                    out.append(m.group(2).strip())
                 else:
-                    self.logger.warning(f"Failed to translate segment {i+1}: {result.error}")
-                    # Add original text as fallback
-                    translation_segments.append(TranslationSegment(
-                        original_text=segment,
-                        translated_text=segment,  # Fallback to original
-                        source_language=source_lang,
-                        target_language=target_lang,
-                        confidence=0.0,
-                        processing_time=0.0
-                    ))
-                    full_translated_text += segment + " "
-            
-            total_processing_time = time.time() - start_time
-            
+                    out.append(ln)
+
+            if len(out) != len(texts):
+                if len(out) < len(texts):
+                    out.extend([""] * (len(texts) - len(out)))
+                else:
+                    out = out[: len(texts)]
+
+            segments = [
+                TranslationSegment(
+                    original_text=orig,
+                    translated_text=tr,
+                    source_language=source_lang,
+                    target_language=target_lang,
+                    confidence=1.0,
+                    processing_time=0.0,
+                )
+                for orig, tr in zip(texts, out)
+            ]
+
+            processing_time = time.time() - start_time
             return TranslationResult(
                 success=True,
-                segments=translation_segments,
-                full_translated_text=full_translated_text.strip(),
-                total_processing_time=total_processing_time
+                segments=segments,
+                full_translated_text="\n".join(out),
+                total_processing_time=processing_time,
             )
-            
+
         except Exception as e:
-            self.logger.error(f"Error translating segments with OpenAI: {str(e)}")
+            self.logger.error(f"Error in batch translation with OpenAI: {str(e)}")
             return TranslationResult(success=False, error=str(e))
+    
+    def translate_segments(self, segments: List[str], source_lang: str, target_lang: str) -> TranslationResult:
+        """Alias for batch_translate to match expected interface"""
+        return self.batch_translate(segments, source_lang, target_lang)
 
 class TranslatorFactory:
     """Factory for creating translators"""
