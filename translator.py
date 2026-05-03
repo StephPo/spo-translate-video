@@ -465,6 +465,8 @@ class OpenAITranslator(Translator):
                 target_language=target_lang,
                 source_language_name=_lang_name(source_lang),
                 target_language_name=_lang_name(target_lang),
+                video_title=str(self.config.get('_runtime', {}).get('video_title') or ''),
+                video_filename=str(self.config.get('_runtime', {}).get('video_filename') or ''),
             )
 
             system_prompt = str(self.system_prompt).format_map(ctx)
@@ -570,6 +572,8 @@ class OpenAITranslator(Translator):
                 target_language=target_lang,
                 source_language_name=_lang_name(source_lang),
                 target_language_name=_lang_name(target_lang),
+                video_title=str(self.config.get('_runtime', {}).get('video_title') or ''),
+                video_filename=str(self.config.get('_runtime', {}).get('video_filename') or ''),
             )
 
             system_prompt = str(self.system_prompt).format_map(ctx)

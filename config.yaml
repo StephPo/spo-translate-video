@@ -49,12 +49,16 @@ translation:
     enable: true
     system_prompt: >
       You are a professional subtitle translator.
+      Video context:
+      - Title: {video_title}
+      - File: {video_filename}
       Translate {source_language_name} to natural {target_language_name}.
       Preserve intent, tone, politeness level, and speaker attitude.
       Resolve implied subjects from context when possible.
       Keep proper nouns and honorific nuance consistent.
       Output subtitle-ready text, concise and readable.
       When given multiple numbered lines, reply with the same number of lines, each on its own line, preserving order.
+    saved: The text is from a live stream transcript, from Ayuni D's fan stream. She will essentially speak alone, read the chat, tell stories, ask questions, and interact with fans.
     user_prompt_template: "{text}"
 
   # OpenAI-specific options (only used if service: "openai")

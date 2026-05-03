@@ -597,6 +597,8 @@ def generate_french_subtitles(
 
         video_path = Path(video_result.video_path)
         title = (video_result.metadata or {}).get("title") or video_path.stem
+        config.setdefault("_runtime", {})["video_title"] = title
+        config.setdefault("_runtime", {})["video_filename"] = video_path.name
         progress("input", 100, f"Video ready: {title}")
 
         if source_type == "youtube":
@@ -611,6 +613,8 @@ def generate_french_subtitles(
     else:
         # Resumed without re-downloading.
         progress("input", 100, f"Video ready (cached): {title}")
+        config.setdefault("_runtime", {})["video_title"] = title
+        config.setdefault("_runtime", {})["video_filename"] = video_path.name if video_path else ""
         # We don't have fresh metadata/preflight when resuming from cache; keep quality_info minimal.
         quality_info.setdefault("downgraded", False)
 
