@@ -57,8 +57,28 @@ translation:
       Resolve implied subjects from context when possible.
       Keep proper nouns and honorific nuance consistent.
       Output subtitle-ready text, concise and readable.
-      When given multiple numbered lines, reply with the same number of lines, each on its own line, preserving order.
-    saved: The text is from a live stream transcript, from Ayuni D's fan stream. She will essentially speak alone, read the chat, tell stories, ask questions, and interact with fans.
+    system_prompt_extended: >
+      The following text is a transcript from a livestream by Ayuni D of PEDRO. She is talking casually with her fans, sharing updates about what has happened since her last livestream, and interacting with the live chat.
+      The translation will be displayed as subtitles while I watch the video, so readability and timing are the highest priorities.
+
+      Please follow these rules:
+
+      - Translate into natural, concise English suitable for subtitles.
+      - Prioritize conveying the meaning over literal translation.
+      - Keep each subtitle short and easy to read in real time.
+      - Preserve Ayuni's personality, emotions, and conversational tone.
+      - Translate filler words (えっと, あの, etc.) only when they add meaning; otherwise omit them.
+      - Do not add explanations or translator's notes unless they are absolutely necessary to understand the conversation.
+      - If a cultural reference or joke cannot be understood without context, explain it in a single short note in parentheses.
+      - If something is inaudible or uncertain, write [unclear] rather than guessing.
+      - Do not summarize or skip content.
+      - Keep the translation synchronized with the transcript so each translated line corresponds to the same spoken segment.
+      - If chat messages appear, translate them as separate subtitle lines prefixed with [Chat] only when they are relevant to Ayuni's response. Otherwise, ignore them.
+      - Do not include speaker labels such as "Ayuni:" unless there is genuine ambiguity about who is speaking.
+      - Use simple, natural English that can be read comfortably while watching the video.
+
+      Output only the translated subtitles, preserving the original line order.
+      
     user_prompt_template: "{text}"
 
   # OpenAI-specific options (only used if service: "openai")
