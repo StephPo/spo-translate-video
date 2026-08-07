@@ -6,3 +6,4 @@ temp/
 video_translation.log
 config.local.yaml
 protocol-handler.log
+.devin/mcp_config.local.json

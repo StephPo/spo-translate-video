@@ -1,11 +1,8 @@
-import os
 import logging
-from pathlib import Path
-from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
-import whisper
-import torch
-from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 
 @dataclass
 class TranscriptionSegment:
@@ -13,7 +10,7 @@ class TranscriptionSegment:
     end_time: float
     text: str
     confidence: float
-    speaker_id: Optional[int] = None
+
 
 @dataclass
 class TranscriptionResult:
@@ -23,256 +20,112 @@ class TranscriptionResult:
     language: Optional[str] = None
     error: Optional[str] = None
 
-class SpeechRecognizer(ABC):
-    """Abstract base class for speech recognition engines"""
-    
-    @abstractmethod
-    def transcribe(self, audio_path: str, language: str = "ja") -> TranscriptionResult:
-        pass
 
-class WhisperRecognizer(SpeechRecognizer):
-    """Whisper-based speech recognition"""
-    
+class WhisperRecognizer:
+    """Local speech-to-text transcription using openai-whisper."""
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.speech_config = config.get('speech_recognition', {})
-        
-        # Whisper settings
-        self.model_name = self.speech_config.get('whisper_model', 'large')
-        self.language = self.speech_config.get('language', 'ja')
-        self.confidence_threshold = self.speech_config.get('confidence_threshold', 0.5)
-        self.enable_diarization = self.speech_config.get('enable_diarization', False)
-        
-        # GPU settings
-        self.gpu_acceleration = config.get('advanced', {}).get('gpu_acceleration', False)
-        self.gpu_device = config.get('advanced', {}).get('gpu_device', 0)
-        
-        # Load model
+        speech_cfg = config.get("speech_recognition", {})
+
+        self.model_name = speech_cfg.get("whisper_model", "large")
+        self.confidence_threshold = float(speech_cfg.get("confidence_threshold", 0.2))
+
+        advanced_cfg = config.get("advanced", {})
+        self.gpu_acceleration = bool(advanced_cfg.get("gpu_acceleration", False))
+        self.gpu_device = int(advanced_cfg.get("gpu_device", 0))
+
         self.model = None
-        self._load_model()
-    
+
     def _load_model(self):
-        """Load Whisper model"""
-        try:
-            device = f"cuda:{self.gpu_device}" if self.gpu_acceleration and torch.cuda.is_available() else "cpu"
-            self.logger.info(f"Loading Whisper model '{self.model_name}' on device: {device}")
-            
-            self.model = whisper.load_model(self.model_name, device=device)
-            self.logger.info("Whisper model loaded successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error loading Whisper model: {str(e)}")
-            raise
-    
+        if self.model is not None:
+            return
+        import torch
+        import whisper
+
+        device = f"cuda:{self.gpu_device}" if self.gpu_acceleration and torch.cuda.is_available() else "cpu"
+        self.logger.info(f"Loading Whisper model '{self.model_name}' on device: {device}")
+        self.model = whisper.load_model(self.model_name, device=device)
+        self.logger.info("Whisper model loaded")
+
     def transcribe(self, audio_path: str, language: str = "ja") -> TranscriptionResult:
-        """Transcribe audio using Whisper"""
         try:
-            audio_path = Path(audio_path)
-            if not audio_path.exists():
-                return TranscriptionResult(success=False, error=f"Audio file not found: {audio_path}")
-            
-            # Transcribe with Whisper
-            self.logger.info(f"Transcribing audio: {audio_path}")
-            
+            self._load_model()
+
+            audio_path_p = Path(audio_path)
+            if not audio_path_p.exists():
+                return TranscriptionResult(success=False, error=f"Audio file not found: {audio_path_p}")
+
+            self.logger.info(f"Transcribing audio: {audio_path_p}")
             result = self.model.transcribe(
-                str(audio_path),
+                str(audio_path_p),
                 language=language,
                 task="transcribe",
                 verbose=False,
                 fp16=self.gpu_acceleration,
-                word_timestamps=True
+                word_timestamps=True,
             )
-            
-            # Process segments
-            segments = []
-            for segment in result.get('segments', []):
-                transcription_segment = TranscriptionSegment(
-                    start_time=segment.get('start', 0),
-                    end_time=segment.get('end', 0),
-                    text=segment.get('text', '').strip(),
-                    confidence=self._calculate_confidence(segment),
-                    speaker_id=None  # Whisper doesn't provide speaker diarization
+
+            segments: List[TranscriptionSegment] = []
+            for seg in result.get("segments", []):
+                text = (seg.get("text") or "").strip()
+                confidence = self._estimate_confidence(text, seg)
+                if confidence < self.confidence_threshold:
+                    continue
+                segments.append(
+                    TranscriptionSegment(
+                        start_time=float(seg.get("start", 0.0)),
+                        end_time=float(seg.get("end", 0.0)),
+                        text=text,
+                        confidence=confidence,
+                    )
                 )
-                
-                # Filter by confidence threshold
-                if transcription_segment.confidence >= self.confidence_threshold:
-                    segments.append(transcription_segment)
-            
-            full_text = result.get('text', '').strip()
-            detected_language = result.get('language', language)
-            
-            self.logger.info(f"Transcription completed: {len(segments)} segments, language: {detected_language}")
-            
+
             return TranscriptionResult(
                 success=True,
                 segments=segments,
-                full_text=full_text,
-                language=detected_language
+                full_text=(result.get("text") or "").strip(),
+                language=result.get("language", language),
             )
-            
         except Exception as e:
-            self.logger.error(f"Error transcribing audio: {str(e)}")
+            self.logger.error(f"Error transcribing audio: {e}")
             return TranscriptionResult(success=False, error=str(e))
-    
-    def _calculate_confidence(self, segment: Dict[str, Any]) -> float:
-        """Calculate confidence score for a segment"""
-        # Whisper doesn't provide direct confidence scores
-        # This is a heuristic based on segment characteristics
-        text = segment.get('text', '').strip()
-        
+
+    @staticmethod
+    def _estimate_confidence(text: str, seg: Optional[Dict[str, Any]] = None) -> float:
+        # Whisper does not expose a single calibrated 0-1 confidence score, but each
+        # segment does carry two real decoding signals we can use: `avg_logprob` (mean
+        # log-probability of the decoded tokens; closer to 0 = more confident) and
+        # `no_speech_prob` (probability the segment contains no speech at all, useful to
+        # catch typical Whisper hallucinations on silence/noise). These are combined with
+        # the previous text-shape heuristic as a fallback/complement.
         if not text:
             return 0.0
-        
-        # Base confidence on text length and presence of special characters
-        confidence = 0.8  # Base confidence
-        
-        # Reduce confidence for very short segments
+        confidence = 0.8
         if len(text) < 3:
             confidence -= 0.2
-        
-        # Reduce confidence for segments with many special characters
-        special_chars = sum(1 for c in text if not c.isalnum() and c not in ' .,!?')
+        special_chars = sum(1 for c in text if not c.isalnum() and c not in " .,!?")
         if special_chars > len(text) * 0.3:
             confidence -= 0.1
-        
+
+        if seg:
+            avg_logprob = seg.get("avg_logprob")
+            if avg_logprob is not None:
+                # avg_logprob typically ranges roughly from 0 (confident) to -1 or below
+                # (unreliable); clamp and rescale to a 0-1 penalty-free/penalized blend.
+                confidence *= max(0.0, min(1.0, 1.0 + float(avg_logprob)))
+            no_speech_prob = seg.get("no_speech_prob")
+            if no_speech_prob is not None:
+                confidence *= max(0.0, 1.0 - float(no_speech_prob))
+
         return max(0.0, min(1.0, confidence))
 
-class GoogleSpeechRecognizer(SpeechRecognizer):
-    """Google Cloud Speech-to-Text recognizer"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.logger = logging.getLogger(__name__)
-        self.speech_config = config.get('speech_recognition', {})
-        
-        # Check for Google Cloud credentials
-        self.credentials_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-        if not self.credentials_path:
-            self.logger.warning("Google Cloud credentials not found in environment variables")
-    
-    def transcribe(self, audio_path: str, language: str = "ja") -> TranscriptionResult:
-        """Transcribe audio using Google Cloud Speech-to-Text"""
-        try:
-            from google.cloud import speech_v1p1beta1 as speech
-            from google.cloud.speech_v1p1beta1 import types
-            
-            if not self.credentials_path:
-                return TranscriptionResult(
-                    success=False, 
-                    error="Google Cloud credentials not configured"
-                )
-            
-            client = speech.SpeechClient()
-            
-            # Load audio file
-            with open(audio_path, 'rb') as audio_file:
-                content = audio_file.read()
-            
-            # Configure recognition
-            config = types.RecognitionConfig(
-                encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=16000,
-                language_code=f"{language}-JP",
-                enable_automatic_punctuation=True,
-                enable_word_time_offsets=True,
-                enable_speaker_diarization=self.speech_config.get('enable_diarization', False),
-                diarization_speaker_count=2 if self.speech_config.get('enable_diarization', False) else None,
-                model="latest_long"
-            )
-            
-            audio = types.RecognitionAudio(content=content)
-            
-            # Perform transcription
-            self.logger.info(f"Transcribing audio with Google Speech: {audio_path}")
-            response = client.recognize(config=config, audio=audio)
-            
-            # Process results
-            segments = []
-            full_text = ""
-            
-            for result in response.results:
-                alternative = result.alternatives[0]
-                segment_text = alternative.transcript.strip()
-                full_text += segment_text + " "
-                
-                # Create segment (Google doesn't provide precise timestamps without word-level info)
-                if hasattr(alternative, 'words') and alternative.words:
-                    start_time = alternative.words[0].start_time.total_seconds()
-                    end_time = alternative.words[-1].end_time.total_seconds()
-                    confidence = alternative.confidence
-                    
-                    segments.append(TranscriptionSegment(
-                        start_time=start_time,
-                        end_time=end_time,
-                        text=segment_text,
-                        confidence=confidence,
-                        speaker_id=getattr(alternative.words[0], 'speaker_tag', None) if self.speech_config.get('enable_diarization', False) else None
-                    ))
-            
-            self.logger.info(f"Google transcription completed: {len(segments)} segments")
-            
-            return TranscriptionResult(
-                success=True,
-                segments=segments,
-                full_text=full_text.strip(),
-                language=language
-            )
-            
-        except ImportError:
-            return TranscriptionResult(
-                success=False, 
-                error="Google Cloud Speech library not installed. Install with: pip install google-cloud-speech"
-            )
-        except Exception as e:
-            self.logger.error(f"Error with Google Speech transcription: {str(e)}")
-            return TranscriptionResult(success=False, error=str(e))
 
 class SpeechRecognizerFactory:
-    """Factory for creating speech recognizers"""
-    
     @staticmethod
-    def create_recognizer(config: Dict[str, Any]) -> SpeechRecognizer:
-        engine = config.get('speech_recognition', {}).get('engine', 'whisper').lower()
-        
-        if engine == 'whisper':
-            return WhisperRecognizer(config)
-        elif engine == 'google':
-            return GoogleSpeechRecognizer(config)
-        else:
-            raise ValueError(f"Unsupported speech recognition engine: {engine}")
-
-def main():
-    """Test function for speech recognizer"""
-    logging.basicConfig(level=logging.INFO)
-    
-    # Sample config
-    config = {
-        'speech_recognition': {
-            'engine': 'whisper',
-            'whisper_model': 'base',
-            'language': 'ja',
-            'confidence_threshold': 0.5,
-            'enable_diarization': False
-        },
-        'advanced': {
-            'gpu_acceleration': False,
-            'gpu_device': 0
-        }
-    }
-    
-    # Create recognizer
-    recognizer = SpeechRecognizerFactory.create_recognizer(config)
-    
-    # Test transcription (replace with actual audio path for testing)
-    # result = recognizer.transcribe("path/to/audio.wav")
-    # if result.success:
-    #     print(f"Transcription successful: {len(result.segments)} segments")
-    #     print(f"Full text: {result.full_text}")
-    # else:
-    #     print(f"Error: {result.error}")
-    
-    print("Speech recognizer ready for use")
-
-if __name__ == "__main__":
-    main()
+    def create_recognizer(config: Dict[str, Any]) -> WhisperRecognizer:
+        engine = config.get("speech_recognition", {}).get("engine", "whisper").lower()
+        if engine != "whisper":
+            raise ValueError(f"Unsupported speech recognition engine: {engine} (only 'whisper' is supported)")
+        return WhisperRecognizer(config)

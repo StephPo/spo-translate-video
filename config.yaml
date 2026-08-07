@@ -1,227 +1,79 @@
-# Video Translation Configuration
-# Video Auto-Translation System
+# Video Subtitle Auto-Translation — Configuration
+# See SPECIFICATIONS.md for the full description of every option.
+# Secrets (API keys) live in config.local.yaml, NOT here.
+# The default translation prompts (system_prompt / system_prompt_extended)
+# live in config.prompt.yaml, NOT here.
 
 output:
-  # Output directory for processed files
+  # Where subtitles are written when there is no natural "next to the source" location
+  # (used as a fallback / base output dir)
   output_directory: "./output"
-  # Where YouTube videos are downloaded
+  # Where YouTube / m3u8 downloads are saved
   video_download_directory: 'C:\Temp'
-  # Output video format
-  video_format: "mp4"
-  # Output video quality (low, medium, high, original) => not used for the moment
-  video_quality: "high"
-  # Keep original audio track (true/false)
-  keep_original_audio: true
-  # Add subtitles (true/false)
-  add_subtitles: true
-  # Subtitle format (srt, vtt, ass)
+  # Subtitle format (only srt is implemented)
   subtitle_format: "srt"
 
-# Translation Settings
 translation:
-  # Service: "google_translate", "deepl", "azure", "openai"
-  service: "openai"
+  # Active service: "deepl" (recommended default) or "openai"
+  service: "deepl"
+  source_language: "ja"
+  target_language: "fr"
   retry:
     max_retries: 8
     initial_delay_seconds: 2.0
     max_delay_seconds: 60.0
     backoff_multiplier: 2.0
     jitter_ratio: 0.2
-  # Source language
-  source_language: "ja"
-  # Target language
-  target_language: "fr"
   deepl:
-    plan: "free"
-    # Override retry settings per service if needed (optional)
-  # API Keys (set as environment variables or fill here)
-  api_keys:
-    google_translate: ""
-    deepl: ""
-    azure: ""
-    openai: ""
-  # Translation quality (fast, standard, high_quality)
-  quality: "standard"
-  # Preserve formatting (true/false)
-  preserve_formatting: true
-  # Custom translation prompts
-  custom_prompts:
-    enable: true
-    system_prompt: >
-      You are a professional subtitle translator.
-      Video context:
-      - Title: {video_title}
-      - File: {video_filename}
-      Translate {source_language_name} to natural {target_language_name}.
-      Preserve intent, tone, politeness level, and speaker attitude.
-      Resolve implied subjects from context when possible.
-      Keep proper nouns and honorific nuance consistent.
-      Output subtitle-ready text, concise and readable.
-    system_prompt_extended: >
-      The following text is a transcript from a livestream by Ayuni D of PEDRO. She is talking casually with her fans, sharing updates about what has happened since her last livestream, and interacting with the live chat.
-      The translation will be displayed as subtitles while I watch the video, so readability and timing are the highest priorities.
-
-      Please follow these rules:
-
-      - Translate into natural, concise English suitable for subtitles.
-      - Prioritize conveying the meaning over literal translation.
-      - Keep each subtitle short and easy to read in real time.
-      - Preserve Ayuni's personality, emotions, and conversational tone.
-      - Translate filler words (えっと, あの, etc.) only when they add meaning; otherwise omit them.
-      - Do not add explanations or translator's notes unless they are absolutely necessary to understand the conversation.
-      - If a cultural reference or joke cannot be understood without context, explain it in a single short note in parentheses.
-      - If something is inaudible or uncertain, write [unclear] rather than guessing.
-      - Do not summarize or skip content.
-      - Keep the translation synchronized with the transcript so each translated line corresponds to the same spoken segment.
-      - If chat messages appear, translate them as separate subtitle lines prefixed with [Chat] only when they are relevant to Ayuni's response. Otherwise, ignore them.
-      - Do not include speaker labels such as "Ayuni:" unless there is genuine ambiguity about who is speaking.
-      - Use simple, natural English that can be read comfortably while watching the video.
-
-      Output only the translated subtitles, preserving the original line order.
-      
-    user_prompt_template: "{text}"
-
-  # OpenAI-specific options (only used if service: "openai")
+    plan: "free" # "free" or "pro"
   openai:
     model: "gpt-4o"
-    batch_size: 10  
+    batch_size: 10
+  api_keys:
+    deepl: ""
+    openai: ""
+  custom_prompts:
+    enable: true
+    # system_prompt / system_prompt_extended are defined in config.prompt.yaml
+    user_prompt_template: "{text}"
 
-input:
-  # Supported sources: "youtube", "local_file"
-  source_type: "youtube"
-  # For YouTube: video URL or video ID
-  youtube_url: ""
-  # For local files: path to video file
-  local_file_path: ""
-  # Supported formats: mp4, avi, mov, mkv, webm
-  supported_formats: ["mp4", "avi", "mov", "mkv", "webm"]    
-
-# Audio Processing
-audio:
-  # Audio extraction format
-  extraction_format: "wav"
-  # Audio quality for extraction
-  audio_quality: "high"
-  # Sample rate for audio processing (Hz)
-  sample_rate: 16000
-  # Audio channels (1 for mono, 2 for stereo)
-  channels: 1
-  # Normalize audio volume (true/false)
-  normalize_volume: true
-
-# Speech Recognition (Japanese)
 speech_recognition:
-  # Engine: "whisper", "google", "azure"
   engine: "whisper"
-  # Whisper model size (tiny, base, small, medium, large, turbo)
+  # tiny, base, small, medium, large, turbo
   whisper_model: "large"
-  # Enable speaker diarization (true/false)
-  enable_diarization: false
-  # Maximum segment length (seconds)
   max_segment_length: 45
-  # Confidence threshold (0.0-1.0)
   confidence_threshold: 0.2
 
-# Text-to-Speech (French)
-tts:
-  # Engine: "google_tts", "azure_tts", "openai_tts", "pyttsx3"
-  engine: "google_tts"
-  # Voice settings
-  voice:
-    # Voice name (leave empty for auto-selection)
-    name: ""
-    # Gender (male, female, neutral)
-    gender: "female"
-    # Age (child, young, adult, senior)
-    age: "adult"
-    # Speech rate (0.1 to 2.0, 1.0 is normal)
-    rate: 1.0
-    # Pitch (-20.0 to 20.0, 0 is normal)
-    pitch: 0
-    # Volume (0.0 to 1.0)
-    volume: 1.0
-  # Audio format for TTS output
-  output_format: "wav"
-  # Sample rate for TTS
-  sample_rate: 22050
+audio:
+  extraction_format: "wav"
+  sample_rate: 16000
+  channels: 1
+  normalize_volume: true
 
-# Video Processing
 video:
-  # FFmpeg path (leave empty for system PATH)
+  # Leave empty to use ffmpeg/ffprobe from PATH
   ffmpeg_path: ""
-  # Video encoding settings
-  encoding:
-    # Video codec (libx264, libx265, copy)
-    codec: "libx264"
-    # Preset (ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow)
-    preset: "medium"
-    # CRF value (0-51, lower is better quality)
-    crf: 23
-    # Audio codec (aac, mp3, copy)
-    audio_codec: "aac"
-    # Audio bitrate (k)
-    audio_bitrate: 128
-  # Processing threads
-  threads: 4
-  # Temp directory for processing
   temp_directory: "./temp"
-  # Optional JavaScript runtime for yt-dlp's YouTube challenges
+  # JavaScript runtime required by yt-dlp to solve YouTube extraction challenges
   youtube_js_runtime:
-    # Runtime name, e.g. "node", "quickjs", "bun". Leave blank to rely on yt-dlp defaults (deno)
-    runtime: "node"
-    # Absolute path to the runtime executable. Leave blank if the runtime is already on PATH.
-    path: ""
-  # Remote challenge solver components for yt-dlp (needed for new YouTube protections)
+    runtime: "node" # leave blank to rely on yt-dlp defaults (deno)
+    path: ""        # absolute path to the runtime executable; blank if on PATH
   youtube_remote_components:
     enable: true
     components:
       - "ejs:github"
 
-# Processing Settings
 processing:
-  # Enable parallel processing (true/false)
-  parallel_processing: true
-  # Maximum concurrent processes
-  max_concurrent_processes: 2
-  # Chunk size for large files (MB)
-  chunk_size: 100
-  # Enable progress tracking (true/false)
-  show_progress: true
-  # Log level (DEBUG, INFO, WARNING, ERROR)
   log_level: "INFO"
+  show_progress: true
   chapter_autoselect_patterns:
     - "^MC"
-  # Save intermediate files (true/false)
-  save_intermediate: false
-  # Clean temp/intermediate files at start of each run (true/false)
+    - "^Intro$"
+    - "^Outro$"
   clean_temp_on_start: true
+  # How many days of old ./temp/run_* directories to keep before pruning
+  temp_keep_days: 2
 
-# Advanced Settings
 advanced:
-  # Enable GPU acceleration (true/false)
   gpu_acceleration: false
-  # GPU device ID (for multi-GPU systems)
   gpu_device: 0
-  # Memory limit (GB)
-  memory_limit: 8
-  # Timeout for operations (seconds)
-  timeout: 3600
-  # Retry attempts for failed operations
-  retry_attempts: 3
-  # Retry delay (seconds)
-  retry_delay: 5
-
-# Quality Control
-quality_control:
-  # Enable quality checks (true/false)
-  enable_checks: true
-  # Minimum audio duration (seconds)
-  min_audio_duration: 1
-  # Maximum silence duration (seconds)
-  max_silence_duration: 5
-  # Minimum text length for translation
-  min_text_length: 1
-  # Maximum text length per segment
-  max_text_length: 500
-  # Validate translations (true/false)
-  validate_translations: false

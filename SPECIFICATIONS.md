@@ -199,7 +199,7 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
 - Modèle configurable (`tiny` à `large`, y compris `turbo`).
 - Accélération GPU optionnelle (CUDA), avec repli CPU automatique si indisponible.
 - Horodatage par segment (`start`, `end`, texte).
-- Filtrage par seuil de confiance heuristique (Whisper ne fournit pas de score de confiance natif fiable — une heuristique basée sur la longueur du texte et la proportion de caractères spéciaux est utilisée).
+- Filtrage par seuil de confiance heuristique : Whisper ne fournit pas de score de confiance calibré unique (0-1), mais expose par segment `avg_logprob` (log-probabilité moyenne du décodage) et `no_speech_prob` (probabilité d'absence de parole, utile contre les hallucinations sur silence/bruit) ; l'heuristique combine ces deux signaux natifs avec la longueur du texte et la proportion de caractères spéciaux.
 - Longueur de segment maximale configurable.
 
 ### 3.7 Traduction
@@ -207,7 +207,7 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
 Voir §5 pour le détail des fournisseurs. Points communs :
 
 - Segmentation identique à celle produite par Whisper (1 segment audio = 1 ligne/cue de sous-titre).
-- **Retry avec backoff exponentiel + jitter** en cas d'erreur transitoire ou de rate limit (HTTP 429), configurable (`max_retries`, `initial_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_ratio`), avec override possible par service.
+- **Retry avec backoff exponentiel + jitter** en cas d'erreur transitoire ou de rate limit (HTTP 429), configurable (`max_retries`, `initial_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_ratio`), avec override possible par service. Pour le SDK OpenAI, le retry interne du client (`max_retries`, 2 par défaut) est explicitement désactivé (`max_retries=0`) afin que ce backoff custom soit la seule source de retry (évite d'empiler deux mécanismes de retry indépendants).
 - **Fail-fast** : si la traduction échoue définitivement (retries épuisés), le programme s'arrête immédiatement et sauvegarde un **cache JSON** (`<base>.<lang>.cache.json`) contenant les segments déjà traduits, à côté du dossier de sortie des sous-titres.
 - **Reprise (`--resume`)** : relit le cache et continue la traduction à partir du dernier segment traduit, **sans refaire la transcription Whisper** (étape la plus coûteuse en temps).
 

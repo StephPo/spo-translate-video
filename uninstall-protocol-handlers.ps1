@@ -1,15 +1,14 @@
-$keys = @(
-  "HKCU:\Software\Classes\spodl",
-  "HKCU:\Software\Classes\spotr"
-)
+# Removes the spodl: and spotr: custom URL protocol registrations for the
+# current user (HKEY_CURRENT_USER). Safe to run even if not installed.
 
-foreach ($k in $keys) {
-  if (Test-Path $k) {
-    Remove-Item -Path $k -Recurse -Force
-    Write-Host "Removed $k"
+$ErrorActionPreference = 'SilentlyContinue'
+
+foreach ($proto in @('spodl', 'spotr')) {
+  $classPath = "HKCU:\Software\Classes\$proto"
+  if (Test-Path $classPath) {
+    Remove-Item -Path $classPath -Recurse -Force
+    Write-Host "Removed protocol '$proto`:'"
   } else {
-    Write-Host "Not found: $k"
+    Write-Host "Protocol '$proto`:' was not registered."
   }
 }
-
-Write-Host "Uninstalled protocol handlers (HKCU): spodl:// and spotr://"

@@ -1,0 +1,7 @@
+# Copy this file to config.local.yaml and fill in your real API keys.
+# config.local.yaml is gitignored and deep-merged over config.yaml at startup.
+
+translation:
+  api_keys:
+    deepl: "YOUR_DEEPL_KEY"
+    openai: "YOUR_OPENAI_KEY"

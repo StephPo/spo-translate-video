@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""CLI orchestrator for spo-translate-video. See SPECIFICATIONS.md."""
 
 import argparse
 import json
@@ -9,9 +10,8 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -19,7 +19,7 @@ from audio_processor import AudioProcessor
 from speech_recognizer import SpeechRecognizerFactory
 from subtitle_writer import build_cues, write_srt
 from translator import TranslatorFactory
-from video_downloader import VideoDownloader
+from video_downloader import VideoDownloader, detect_source_type
 
 
 class _HelpOnErrorArgumentParser(argparse.ArgumentParser):
@@ -30,63 +30,50 @@ class _HelpOnErrorArgumentParser(argparse.ArgumentParser):
         raise SystemExit(2)
 
 
-@dataclass
-class Progress:
-    stage: str
-    percent: float
-    message: str
+# --------------------------------------------------------------------------
+# Console helpers (color, VT100 support on Windows)
+# --------------------------------------------------------------------------
+
+_VT_ENABLED: Optional[bool] = None
 
 
-def _setup_logging(config: Dict[str, Any]) -> logging.Logger:
-    log_level = config.get("processing", {}).get("log_level", "INFO")
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-    return logging.getLogger("video_subtitles")
-
-
-def _cache_file_path(subtitles_dir: Path, base: str, target_lang: str) -> Path:
-    safe_base = (base or "subtitles").strip() or "subtitles"
-    safe_lang = (target_lang or "").strip().lower() or "target"
-    return subtitles_dir / f"{safe_base}.{safe_lang}.cache.json"
-
-
-def _format_invocation(argv: Optional[list[str]] = None) -> str:
-    args = argv if argv is not None else sys.argv
-    return " ".join(shlex.quote(str(a)) for a in args)
-
-
-def _fmt_quality(obj: Any) -> str:
-    if not isinstance(obj, dict):
-        return "n/a"
+def _supports_ansi() -> bool:
+    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    global _VT_ENABLED
+    if _VT_ENABLED is not None:
+        return _VT_ENABLED
     try:
-        h = int(obj.get("height") or 0)
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        if handle in (0, -1):
+            _VT_ENABLED = False
+            return _VT_ENABLED
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
+            _VT_ENABLED = False
+            return _VT_ENABLED
+        _VT_ENABLED = kernel32.SetConsoleMode(handle, mode.value | 0x0004) != 0
+        return _VT_ENABLED
     except Exception:
-        h = 0
-    ext = str(obj.get("ext") or "").strip() or "?"
-    vcodec = str(obj.get("vcodec") or "").strip() or "?"
-    if h <= 0 and ext == "?" and vcodec == "?":
-        return "n/a"
-    if h > 0:
-        return f"{h}p {ext} {vcodec}".strip()
-    return f"{ext} {vcodec}".strip()
+        _VT_ENABLED = False
+        return _VT_ENABLED
 
 
-def _load_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
-    try:
-        if not cache_path.exists():
-            return None
-        return json.loads(cache_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+def _green(text: str) -> str:
+    return f"\x1b[92m{text}\x1b[0m" if _supports_ansi() else text
 
 
-def _save_cache(cache_path: Path, data: Dict[str, Any]) -> None:
-    tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(cache_path)
+def _yellow(text: str) -> str:
+    return f"\x1b[93m{text}\x1b[0m" if _supports_ansi() else text
+
+
+def _red(text: str) -> str:
+    return f"\x1b[91m{text}\x1b[0m" if _supports_ansi() else text
 
 
 def _print_fatal_error_block(message: str) -> None:
@@ -98,70 +85,13 @@ def _print_fatal_error_block(message: str) -> None:
     print(border + "\n", file=sys.stderr)
 
 
-def _supports_ansi() -> bool:
-    if not hasattr(sys.stdout, "isatty") or not sys.stdout.isatty():
-        return False
-    if os.name != "nt":
-        return True
-    return _enable_windows_vt_processing()
+# --------------------------------------------------------------------------
+# Config loading (config.yaml + config.local.yaml + config.prompt.yaml)
+# --------------------------------------------------------------------------
 
-
-_VT_ENABLED: Optional[bool] = None
-
-
-def _enable_windows_vt_processing() -> bool:
-    global _VT_ENABLED
-    if _VT_ENABLED is not None:
-        return _VT_ENABLED
-
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        if handle == 0 or handle == -1:
-            _VT_ENABLED = False
-            return _VT_ENABLED
-
-        mode = ctypes.c_uint32()
-        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)) == 0:
-            _VT_ENABLED = False
-            return _VT_ENABLED
-
-        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
-        new_mode = mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING
-        if kernel32.SetConsoleMode(handle, new_mode) == 0:
-            _VT_ENABLED = False
-            return _VT_ENABLED
-
-        _VT_ENABLED = True
-        return _VT_ENABLED
-    except Exception:
-        _VT_ENABLED = False
-        return _VT_ENABLED
-
-
-def _green(text: str) -> str:
-    if not _supports_ansi():
-        return text
-    return f"\x1b[92m{text}\x1b[0m"
-
-
-def _yellow(text: str) -> str:
-    if not _supports_ansi():
-        return text
-    return f"\x1b[93m{text}\x1b[0m"
-
-
-def _red(text: str) -> str:
-    if not _supports_ansi():
-        return text
-    return f"\x1b[91m{text}\x1b[0m"
-
-
-def _load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def _load_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,55 +103,55 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return base
 
 
-def _load_config_with_local(config_path: str, local_config_path: Optional[str]) -> Dict[str, Any]:
-    cfg = _load_config(config_path)
-    if local_config_path:
-        p = Path(local_config_path)
-        if p.exists():
-            local_cfg = _load_config(str(p))
-            if isinstance(cfg, dict) and isinstance(local_cfg, dict):
-                cfg = _deep_merge(cfg, local_cfg)
+def load_config(config_path: str, config_local_path: str, prompt_path: str = "config.prompt.yaml") -> Dict[str, Any]:
+    cfg = _load_yaml(config_path)
+
+    local_p = Path(config_local_path)
+    if local_p.exists():
+        cfg = _deep_merge(cfg, _load_yaml(str(local_p)))
+
+    prompt_p = Path(prompt_path)
+    custom_prompts = cfg.setdefault("translation", {}).setdefault("custom_prompts", {})
+    if prompt_p.exists():
+        prompt_cfg = _load_yaml(str(prompt_p))
+        custom_prompts["system_prompt"] = prompt_cfg.get("system_prompt", "")
+        custom_prompts["system_prompt_extended"] = prompt_cfg.get("system_prompt_extended", "")
+    else:
+        custom_prompts.setdefault("system_prompt", "")
+        custom_prompts.setdefault("system_prompt_extended", "")
+
     return cfg
 
 
-def _clean_temp_directory(config: Dict[str, Any], logger: logging.Logger):
-    return
+def _setup_logging(config: Dict[str, Any]) -> logging.Logger:
+    log_level = config.get("processing", {}).get("log_level", "INFO")
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    return logging.getLogger("spo_translate_video")
 
 
-def _prune_temp_runs(base_temp_dir: Path, logger: logging.Logger, keep_days: int = 2) -> None:
-    try:
-        if keep_days <= 0:
-            return
-        if not base_temp_dir.exists():
-            return
-
-        cutoff = time.time() - (keep_days * 24 * 60 * 60)
-        deleted = 0
-        import shutil
-
-        for p in base_temp_dir.glob("run_*"):
-            try:
-                if not p.is_dir():
-                    continue
-                if p.stat().st_mtime >= cutoff:
-                    continue
-                shutil.rmtree(p, ignore_errors=True)
-                deleted += 1
-            except Exception:
-                continue
-
-        if deleted:
-            logger.info(f"Pruned temp run directories older than {keep_days} days: {deleted} removed")
-    except Exception as e:
-        logger.warning(f"Failed to prune temp run directories in '{base_temp_dir}': {e}")
-
+# --------------------------------------------------------------------------
+# Temp directory management (per-run, with pruning of old runs)
+# --------------------------------------------------------------------------
 
 def _create_run_temp_dir(config: Dict[str, Any], logger: logging.Logger) -> Path:
     base_temp_dir = Path(config.get("video", {}).get("temp_directory", "./temp"))
     base_temp_dir.mkdir(parents=True, exist_ok=True)
 
     keep_days = int(config.get("processing", {}).get("temp_keep_days", 2) or 2)
-    _prune_temp_runs(base_temp_dir, logger, keep_days=keep_days)
+    if keep_days > 0:
+        cutoff = time.time() - keep_days * 86400
+        for p in base_temp_dir.glob("run_*"):
+            try:
+                if p.is_dir() and p.stat().st_mtime < cutoff:
+                    import shutil
+
+                    shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                continue
 
     run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
     run_temp_dir = base_temp_dir / run_id
@@ -242,950 +172,325 @@ def _cleanup_run_temp_dir(run_temp_dir: Path, logger: logging.Logger) -> None:
         logger.warning(f"Failed to clean per-run temp directory '{run_temp_dir}': {e}")
 
 
-def _timed_input(prompt: str, config: Optional[Dict[str, Any]] = None) -> str:
-    t0 = time.perf_counter()
+# --------------------------------------------------------------------------
+# Cache (resume support)
+# --------------------------------------------------------------------------
+
+def _cache_file_path(subtitles_dir: Path, base: str, target_lang: str) -> Path:
+    safe_base = (base or "subtitles").strip() or "subtitles"
+    safe_lang = (target_lang or "").strip().lower() or "target"
+    return subtitles_dir / f"{safe_base}.{safe_lang}.cache.json"
+
+
+def _load_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
     try:
-        return input(prompt)
-    finally:
-        if isinstance(config, dict):
-            rt = config.setdefault("_runtime", {})
-            rt["user_wait_seconds"] = float(rt.get("user_wait_seconds") or 0.0) + (time.perf_counter() - t0)
+        if not cache_path.exists():
+            return None
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
 
 
-def _get_overwrite_decision(config: Dict[str, Any]) -> bool:
-    rt = config.setdefault("_runtime", {})
-    if "overwrite_existing" in rt:
-        return bool(rt["overwrite_existing"])
-
-    ans = _timed_input("Output file already exists. Overwrite? (y/n): ", config).strip().lower()
-    overwrite = ans == "y"
-    rt["overwrite_existing"] = overwrite
-    return overwrite
+def _save_cache(cache_path: Path, data: Dict[str, Any]) -> None:
+    tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(cache_path)
 
 
-def _resolve_existing_destination(config: Dict[str, Any], dest: Path) -> Path:
-    if not dest.exists():
-        return dest
+# --------------------------------------------------------------------------
+# Overwrite handling
+# --------------------------------------------------------------------------
 
-    if _get_overwrite_decision(config):
-        return dest
+def _resolve_output_path(desired_path: Path, overwrite_decision: Dict[str, bool]) -> Path:
+    if not desired_path.exists():
+        return desired_path
 
-    stem = dest.stem
-    suffix = dest.suffix
+    if "overwrite" not in overwrite_decision:
+        ans = input(f"Output file already exists ({desired_path}). Overwrite? (y/n): ").strip().lower()
+        overwrite_decision["overwrite"] = ans == "y"
+
+    if overwrite_decision["overwrite"]:
+        return desired_path
+
     for i in range(1, 101):
-        candidate = dest.with_name(f"{stem}_{i}{suffix}")
+        candidate = desired_path.with_name(f"{desired_path.stem}_{i}{desired_path.suffix}")
         if not candidate.exists():
             return candidate
-    raise RuntimeError(f"Unable to find available filename for {dest} (up to _100)")
+    raise RuntimeError(f"Could not find a free filename for {desired_path} (tried up to _100)")
 
 
-def _parse_chapter_selection(selection: str) -> set:
+# --------------------------------------------------------------------------
+# Chapters (local files only)
+# --------------------------------------------------------------------------
+
+def _ffprobe_chapters(video_path: str, ffmpeg_path: str) -> List[Dict[str, Any]]:
+    ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe") if "ffmpeg" in ffmpeg_path else "ffprobe"
+    cmd = [ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_chapters", video_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return []
+    try:
+        data = json.loads(proc.stdout)
+        return data.get("chapters", [])
+    except Exception:
+        return []
+
+
+def _parse_chapter_selection(spec: str, total: int) -> List[int]:
+    """Parse a 1-based selection like '2,5-6' into a sorted list of 0-based indices."""
     selected = set()
-    for part in (selection or "").split(","):
+    for part in spec.split(","):
         part = part.strip()
         if not part:
             continue
         if "-" in part:
             a, b = part.split("-", 1)
-            a = int(a.strip())
-            b = int(b.strip())
-            if a <= 0 or b <= 0:
-                raise ValueError("Chapter numbers must be >= 1")
-            if b < a:
-                a, b = b, a
-            for n in range(a, b + 1):
-                selected.add(n)
+            for i in range(int(a), int(b) + 1):
+                if 1 <= i <= total:
+                    selected.add(i - 1)
         else:
-            n = int(part)
-            if n <= 0:
-                raise ValueError("Chapter numbers must be >= 1")
-            selected.add(n)
-    return selected
+            i = int(part)
+            if 1 <= i <= total:
+                selected.add(i - 1)
+    return sorted(selected)
 
 
-def _compute_autoselect_matches(config: Dict[str, Any], chapters: list) -> list:
-    patterns = config.get("processing", {}).get("chapter_autoselect_patterns", [])
-    if not isinstance(patterns, list):
-        patterns = []
-    regs = []
-    for p in patterns:
-        try:
-            regs.append(re.compile(str(p), re.IGNORECASE))
-        except re.error:
-            continue
-
-    out = []
-    for c in chapters:
-        title = c.get("title") or ""
-        out.append(any(r.search(title) for r in regs))
-    return out
-
-
-def _fmt_ts(seconds: float) -> str:
-    seconds = max(0.0, float(seconds))
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-
-def _read_chapters_ffprobe(video_path: Path, config: Dict[str, Any]) -> list:
-    ffprobe_path = str(config.get("video", {}).get("ffprobe_path") or "ffprobe")
-    cmd = [
-        ffprobe_path,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-print_format",
-        "json",
-        "-show_chapters",
-        "-i",
-        str(video_path),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "").strip())
-    data = json.loads(proc.stdout or "{}")
-    chapters = data.get("chapters") or []
-    out = []
-    for i, ch in enumerate(chapters, start=1):
-        start = float(ch.get("start_time") or 0.0)
-        end = float(ch.get("end_time") or 0.0)
-        title = ((ch.get("tags") or {}).get("title") or "").strip()
-        out.append({"index": i, "start": start, "end": end, "title": title})
-    return out
-
-
-def _select_chapters(
-    config: Dict[str, Any],
-    chapters: list,
-    selection: Optional[str],
-    autoselect: bool,
-) -> Optional[list]:
-    if not chapters:
-        return None
-
-    if not selection and not autoselect:
-        return None
-
-    selected_numbers = _parse_chapter_selection(selection) if selection else set()
-    matches = _compute_autoselect_matches(config, chapters) if autoselect else [False] * len(chapters)
-
+def _autoselect_chapters(chapters: List[Dict[str, Any]], patterns: List[str]) -> List[int]:
+    compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
     selected = []
-    for i, c in enumerate(chapters):
-        if c["index"] in selected_numbers or matches[i]:
-            selected.append(c)
-
-    if not selected:
-        ans = _timed_input("No chapters matched selection. Translate the whole file instead? (y/n): ", config).strip().lower()
-        if ans == "y":
-            return None
-        raise RuntimeError("No chapters matched selection")
-
+    for idx, ch in enumerate(chapters):
+        title = str((ch.get("tags") or {}).get("title") or "")
+        if any(p.search(title) for p in compiled):
+            selected.append(idx)
     return selected
 
 
-def _print_progress(p: Progress):
-    bar_len = 40
-    filled = int(bar_len * max(0.0, min(100.0, p.percent)) / 100.0)
-    bar = "#" * filled + "-" * (bar_len - filled)
-    print(f"\r{p.stage:16s} |{bar}| {p.percent:6.1f}%  {p.message:60s}", end="", flush=True)
-    if p.percent >= 100:
-        print()
+def _resolve_chapter_selection(chapters: List[Dict[str, Any]], manual_spec: Optional[str], autoselect: bool,
+                                patterns: List[str]) -> List[int]:
+    selected = set()
+    if manual_spec:
+        selected.update(_parse_chapter_selection(manual_spec, len(chapters)))
+    if autoselect:
+        selected.update(_autoselect_chapters(chapters, patterns))
+    return sorted(selected)
 
 
-def generate_french_subtitles(
-    config: Dict[str, Any],
-    input_source: str,
-    source_type: str,
-    output_basename: Optional[str] = None,
-    show_progress: bool = True,
-    chapters: Optional[str] = None,
-    autoselect_chapters: bool = False,
-    list_chapters: bool = False,
-    source_lang: Optional[str] = None,
-    target_lang: Optional[str] = None,
-    download_only: bool = False,
-    info_only: bool = False,
-    dry_run: bool = False,
-    resume: bool = False,
-) -> Dict[str, Any]:
-    logger = logging.getLogger("video_subtitles")
+# --------------------------------------------------------------------------
+# Pipeline
+# --------------------------------------------------------------------------
 
-    timings_seconds: Dict[str, float] = {}
-    t0_total = time.perf_counter()
+def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) -> Tuple[str, str, Optional[str]]:
+    """Return (video_path, title_for_output, quality_warning)."""
+    source_type = detect_source_type(source)
+    logger.info(f"Detected source type: {source_type}")
 
-    def progress(stage: str, percent: float, message: str):
-        if show_progress:
-            _print_progress(Progress(stage=stage, percent=percent, message=message))
-
-    run_temp_dir = _create_run_temp_dir(config, logger)
+    if source_type == "local":
+        p = Path(source)
+        return str(p), p.stem, None
 
     downloader = VideoDownloader(config)
-
-    out_dir = Path(config.get("output", {}).get("output_directory", "./output"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    def compute_subtitles_dir(effective_source_type: str, resolved_video_path: Optional[Path]) -> Path:
-        dest_override = bool(config.get("_runtime", {}).get("dest_override"))
-        if effective_source_type == "local" and not dest_override:
-            if resolved_video_path is not None:
-                return resolved_video_path.parent
-            return Path(input_source).resolve().parent
-        return Path(config.get("output", {}).get("video_download_directory", str(out_dir)))
-
-    progress("input", 0, "Loading video...")
-    if dry_run:
-        try:
-            import shutil
-            shutil.rmtree(run_temp_dir, ignore_errors=True)
-        except Exception:
-            pass
-        if source_type == "auto":
-            if input_source.startswith(("http://", "https://")):
-                source_type = "m3u8" if input_source.lower().split("?", 1)[0].endswith(".m3u8") else "youtube"
-            else:
-                source_type = "local"
-
-        if source_lang:
-            config.setdefault("translation", {})["source_language"] = source_lang
-        if target_lang:
-            config.setdefault("translation", {})["target_language"] = target_lang
-
-        tgt = str(config.get("translation", {}).get("target_language", "fr")).strip().lower() or "fr"
-        base = output_basename
-        if not base:
-            if source_type == "local":
-                base = Path(input_source).stem
-            elif source_type == "m3u8":
-                base = "hls_video"
-            else:
-                base = "youtube_video"
-
-        planned_subtitle = compute_subtitles_dir(source_type, None) / f"{base}.{tgt}.srt"
-
-        print("\nDry run:")
-        print(f"- Source type: {source_type}")
-        print(f"- Input: {input_source}")
-        if source_type == "local":
-            print(f"- Local file exists: {Path(input_source).exists()}")
-        elif source_type == "youtube":
-            print(f"- Video will be downloaded to: {config.get('output', {}).get('video_download_directory', config.get('output', {}).get('output_directory', './output'))}")
-        elif source_type == "m3u8":
-            print(f"- Stream will be downloaded/remuxed to: {config.get('output', {}).get('video_download_directory', config.get('output', {}).get('output_directory', './output'))}")
-        print(f"- Planned subtitles: {planned_subtitle}")
-        if chapters or autoselect_chapters:
-            print(f"- Chapter selection requested: chapters={chapters or ''} autoselect={autoselect_chapters}")
-        print("- No download/transcription/translation performed")
-
-        return {
-            "success": True,
-            "video_path": "",
-            "subtitle_path": "",
-            "title": "",
-            "segments": 0,
-        }
-
-    if source_type == "auto":
-        if input_source.startswith(("http://", "https://")):
-            source_type = "m3u8" if input_source.lower().split("?", 1)[0].endswith(".m3u8") else "youtube"
-        else:
-            source_type = "local"
-
-    if source_lang:
-        config.setdefault("translation", {})["source_language"] = source_lang
-    if target_lang:
-        config.setdefault("translation", {})["target_language"] = target_lang
-
-    # --resume: if we can locate an existing cache deterministically, skip re-download.
-    # Prefer output_basename (stable), otherwise fall back to the newest cache in the subtitles dir.
-    skip_download = False
-    video_path: Optional[Path] = None
-    title = ""
-    quality_info: Dict[str, Any] = {}
-    if resume:
-        tgt_resume = str(config.get("translation", {}).get("target_language", "fr")).strip().lower() or "fr"
-        subtitles_dir_resume = compute_subtitles_dir(source_type, None)
-
-        cache_path_resume: Optional[Path] = None
-        if output_basename:
-            cache_path_resume = _cache_file_path(subtitles_dir_resume, output_basename, tgt_resume)
-        else:
-            # Heuristic: pick the newest cache for this target language.
-            candidates = sorted(
-                subtitles_dir_resume.glob(f"*.{tgt_resume}.cache.json"),
-                key=lambda p: p.stat().st_mtime if p.exists() else 0,
-                reverse=True,
-            )
-            if candidates:
-                cache_path_resume = candidates[0]
-
-        cache_resume = _load_cache(cache_path_resume) if cache_path_resume else None
-        cached_video_path_resume = (cache_resume or {}).get("video_path")
-        if isinstance(cached_video_path_resume, str):
-            candidate = Path(cached_video_path_resume)
-            if candidate.exists():
-                skip_download = True
-                video_path = candidate
-                title = candidate.stem
-                # keep timings consistent
-                timings_seconds["metadata"] = 0.0
-                timings_seconds["download"] = 0.0
-
-    if not skip_download:
-        if source_type == "youtube":
-            t0_meta = time.perf_counter()
-            preflight = downloader.preflight_youtube_quality(input_source)
-            timings_seconds["metadata"] = time.perf_counter() - t0_meta
-            if isinstance(preflight, dict) and not preflight.get("error"):
-                best_overall = preflight.get("best_overall") or {}
-                best_mp4 = preflight.get("best_mp4") or {}
-                best_overall_height = int(preflight.get("best_overall_height") or 0)
-                best_mp4_height = int(preflight.get("best_mp4_height") or 0)
-
-                prefer_best_any = best_overall_height > best_mp4_height or best_mp4_height == 0
-
-                quality_info = {
-                    "downgraded": prefer_best_any,
-                    "prefer_best_any": prefer_best_any,
-                    "best_available": {
-                        "height": best_overall_height,
-                        "ext": str(best_overall.get("ext") or ""),
-                        "vcodec": str(best_overall.get("vcodec") or ""),
-                    },
-                    "best_mp4": {
-                        "height": best_mp4_height,
-                        "ext": str(best_mp4.get("ext") or ""),
-                        "vcodec": str(best_mp4.get("vcodec") or ""),
-                    },
-                }
-
-                best_mp4_info = quality_info.get("best_mp4") or {}
-                best_av = quality_info.get("best_available") or {}
-                if best_av or best_mp4_info:
-                    print("\nVideo quality (planning):")
-                    if prefer_best_any and best_av:
-                        print(f"- Targeting best available: {_fmt_quality(best_av)}")
-                    elif best_mp4_info:
-                        print(f"- Targeting MP4: {_fmt_quality(best_mp4_info)}")
-                    if best_mp4_info:
-                        print(f"- Best MP4: {_fmt_quality(best_mp4_info)}")
-                    if best_av:
-                        print(f"- Best available: {_fmt_quality(best_av)}")
-
-        t0_download = time.perf_counter()
-        if source_type == "youtube":
-            prefer_best_any = bool(quality_info.get("prefer_best_any"))
-            video_result = downloader.download_from_youtube(input_source, prefer_best_any_container=prefer_best_any)
-            timings_seconds["download"] = time.perf_counter() - t0_download
-        elif source_type == "m3u8":
-            video_result = downloader.download_from_m3u8(input_source)
-            timings_seconds["download"] = time.perf_counter() - t0_download
-        elif source_type == "local":
-            video_result = downloader.process_local_file(input_source)
-        else:
-            return {"success": False, "error": f"Unsupported source type: {source_type}"}
-
-        if not video_result.success or not video_result.video_path:
-            timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
-            return {
-                "success": False,
-                "error": video_result.error or "Failed to load video",
-                "timings_seconds": timings_seconds,
-                "quality_info": quality_info,
-            }
-
-        video_path = Path(video_result.video_path)
-        title = (video_result.metadata or {}).get("title") or video_path.stem
-        config.setdefault("_runtime", {})["video_title"] = title
-        config.setdefault("_runtime", {})["video_filename"] = video_path.name
-        progress("input", 100, f"Video ready: {title}")
-
-        if source_type == "youtube":
-            md = video_result.metadata or {}
-            downloaded_snapshot = {
-                "height": int(md.get("downloaded_video_height") or 0),
-                "ext": str(md.get("downloaded_video_ext") or ""),
-                "vcodec": str(md.get("downloaded_video_vcodec") or ""),
-            }
-            quality_info.setdefault("downloaded", {})
-            quality_info["downloaded"] = downloaded_snapshot
+    if source_type == "youtube":
+        result = downloader.download_from_youtube(source)
     else:
-        # Resumed without re-downloading.
-        progress("input", 100, f"Video ready (cached): {title}")
-        config.setdefault("_runtime", {})["video_title"] = title
-        config.setdefault("_runtime", {})["video_filename"] = video_path.name if video_path else ""
-        # We don't have fresh metadata/preflight when resuming from cache; keep quality_info minimal.
-        quality_info.setdefault("downgraded", False)
+        result = downloader.download_from_m3u8(source)
 
-    subtitles_dir = compute_subtitles_dir(source_type, video_path)
-    subtitles_dir.mkdir(parents=True, exist_ok=True)
+    if not result.success:
+        raise RuntimeError(f"Download failed: {result.error}")
 
-    if download_only or info_only:
-        if info_only:
-            tgt = str(config.get("translation", {}).get("target_language", "fr")).strip().lower() or "fr"
-            base = output_basename or video_path.stem
-            planned_subtitle = subtitles_dir / f"{base}.{tgt}.srt"
+    title = result.title or Path(result.video_path).stem
+    return result.video_path, title, result.quality_warning
 
-            print("\nInfo:")
-            print(f"- Source type: {source_type}")
-            print(f"- Input: {input_source}")
-            print(f"- Video path: {video_path}")
-            print(f"- Title: {title}")
-            print(f"- Planned subtitles: {planned_subtitle}")
 
-            if source_type == "local":
-                try:
-                    chs = _read_chapters_ffprobe(video_path, config)
-                    if chs:
-                        print(f"- Chapters found: {len(chs)}")
-                    else:
-                        print("- Chapters found: 0")
-
-                    if chs and (chapters or autoselect_chapters):
-                        matches = _compute_autoselect_matches(config, chs) if autoselect_chapters else [False] * len(chs)
-                        selected = _select_chapters(config, chs, chapters, autoselect_chapters)
-                        selected_idx = {c["index"] for c in (selected or [])}
-                        print("\nChapters:")
-                        for i, c in enumerate(chs):
-                            tags = []
-                            if c["index"] in selected_idx:
-                                tags.append("SELECTED")
-                            if matches[i]:
-                                tags.append("MATCH")
-                            mark = f"[{'&'.join(tags)}]" if tags else ""
-                            print(
-                                f"{c['index']:>3d}  { _fmt_ts(c['start']) } -> { _fmt_ts(c['end']) }  {mark:10s}  {c.get('title','')}"
-                            )
-                except Exception as e:
-                    return {"success": False, "error": f"Failed to read chapters: {e}"}
-
-        timings_seconds["total"] = time.perf_counter() - t0_total
-        timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
-        _cleanup_run_temp_dir(run_temp_dir, logger)
-        return {
-            "success": True,
-            "video_path": str(video_path),
-            "subtitle_path": "",
-            "title": title,
-            "segments": 0,
-            "timings_seconds": timings_seconds,
-            "quality_info": quality_info,
-        }
-
-    transcribe_lang = config.get("translation", {}).get("source_language", "ja")
-
-    if list_chapters:
-        if source_type != "local":
-            return {"success": False, "error": "--listchapters is only supported for local files", "timings_seconds": timings_seconds}
-        try:
-            chs = _read_chapters_ffprobe(video_path, config)
-            if not chs:
-                print("No chapters found")
-                timings_seconds["total"] = time.perf_counter() - t0_total
-                return {
-                    "success": True,
-                    "video_path": str(video_path),
-                    "subtitle_path": "",
-                    "title": title,
-                    "segments": 0,
-                    "timings_seconds": timings_seconds,
-                }
-
-            selected_numbers = _parse_chapter_selection(chapters) if chapters else None
-            matches = _compute_autoselect_matches(config, chs) if autoselect_chapters else [False] * len(chs)
-
-            print("\nChapters:")
-            for i, c in enumerate(chs):
-                tags = []
-                if selected_numbers is not None and c["index"] in selected_numbers:
-                    tags.append("SELECTED")
-                if autoselect_chapters and matches[i]:
-                    tags.append("MATCH")
-                mark = f"[{'&'.join(tags)}]" if tags else ""
-                print(
-                    f"{c['index']:>3d}  { _fmt_ts(c['start']) } -> { _fmt_ts(c['end']) }  {mark:10s}  {c.get('title','')}"
-                )
-
-            timings_seconds["total"] = time.perf_counter() - t0_total
-            _cleanup_run_temp_dir(run_temp_dir, logger)
-            return {
-                "success": True,
-                "video_path": str(video_path),
-                "subtitle_path": "",
-                "title": title,
-                "segments": 0,
-                "timings_seconds": timings_seconds,
-            }
-        except Exception as e:
-            return {"success": False, "error": f"Failed to list chapters: {e}", "timings_seconds": timings_seconds}
-
-    base = output_basename or video_path.stem
-    tgt = str(config.get("translation", {}).get("target_language", "fr")).strip().lower() or "fr"
-    cache_path = _cache_file_path(subtitles_dir, base, tgt)
-
-    cache = _load_cache(cache_path) if resume else None
-
-    cached_video_path = None
-    cached_segments = None
-    cached_translated_texts = None
-    if cache:
-        cached_video_path = cache.get("video_path")
-        cached_segments = cache.get("segments")
-        cached_translated_texts = cache.get("translated_texts")
-
-    use_cached_transcription = (
-        isinstance(cached_video_path, str)
-        and str(Path(cached_video_path)) == str(video_path)
-        and isinstance(cached_segments, list)
-        and len(cached_segments) > 0
-    )
-
-    all_segments = []
-    if use_cached_transcription:
-        try:
-            for s in cached_segments:
-                all_segments.append(
-                    type("_Seg", (), {})()
-                )
-                all_segments[-1].start_time = float(s.get("start_time"))
-                all_segments[-1].end_time = float(s.get("end_time"))
-                all_segments[-1].text = str(s.get("text") or "")
-        except Exception:
-            all_segments = []
-            use_cached_transcription = False
-
+def _translate_and_write(
+    *, config: Dict[str, Any], logger: logging.Logger, video_path: str, output_basename: str,
+    subtitles_dir: Path, source_lang: str, target_lang: str, resume: bool,
+    time_range: Optional[Tuple[float, float]] = None,
+) -> Path:
     audio_processor = AudioProcessor(config)
-    recognizer = None
-    translator = None
-
-    selected_chapters = None
-    if source_type == "local" and (chapters or autoselect_chapters):
-        try:
-            chs = _read_chapters_ffprobe(video_path, config)
-            selected_chapters = _select_chapters(config, chs, chapters, autoselect_chapters)
-            if selected_chapters is not None:
-                logger.info(f"Selected {len(selected_chapters)} chapters for transcription")
-        except Exception as e:
-            return {"success": False, "error": f"Chapter selection failed: {e}", "timings_seconds": timings_seconds}
-
-    max_seg = config.get("speech_recognition", {}).get("max_segment_length", 30)
-    t0_transcribe = time.perf_counter()
-    if not use_cached_transcription:
-        recognizer = SpeechRecognizerFactory.create_recognizer(config)
-        progress("transcribe", 0, "Transcribing Japanese...")
-
-        if selected_chapters is None:
-            progress("audio", 0, "Extracting audio...")
-            audio_result = audio_processor.extract_audio_from_video(str(video_path))
-            if not audio_result.success or not audio_result.audio_path:
-                return {"success": False, "error": audio_result.error or "Failed to extract audio"}
-            progress("audio", 100, "Audio extracted")
-
-            seg_result = audio_processor.segment_audio(audio_result.audio_path, max_seg)
-            if seg_result.success and seg_result.segments:
-                for i, seg in enumerate(seg_result.segments):
-                    progress("transcribe", (i / max(1, len(seg_result.segments))) * 100, f"Segment {i+1}/{len(seg_result.segments)}")
-                    r = recognizer.transcribe(seg.audio_path, language=transcribe_lang)
-                    if r.success and r.segments:
-                        for s in r.segments:
-                            s.start_time += seg.start_time
-                            s.end_time += seg.start_time
-                        all_segments.extend(r.segments)
-            else:
-                r = recognizer.transcribe(audio_result.audio_path, language=transcribe_lang)
-                if not r.success or not r.segments:
-                    return {"success": False, "error": r.error or "Transcription failed"}
-                all_segments = r.segments
-        else:
-            for ci, ch in enumerate(selected_chapters):
-                ch_index = ch["index"]
-                ch_start = float(ch["start"])
-                ch_end = float(ch["end"])
-                ch_title = ch.get("title") or f"Chapter {ch_index}"
-                progress("audio", (ci / max(1, len(selected_chapters))) * 100, f"Extracting chapter {ch_index}: {ch_title}")
-                ar = audio_processor.extract_audio_segment_from_video(str(video_path), ch_start, ch_end, tag=f"ch{ch_index:03d}")
-                if not ar.success or not ar.audio_path:
-                    return {"success": False, "error": ar.error or f"Failed to extract chapter {ch_index} audio"}
-
-                seg_result = audio_processor.segment_audio(ar.audio_path, max_seg)
-                if seg_result.success and seg_result.segments:
-                    for i, seg in enumerate(seg_result.segments):
-                        progress(
-                            "transcribe",
-                            100.0 * (ci + (i / max(1, len(seg_result.segments)))) / max(1, len(selected_chapters)),
-                            f"Chapter {ch_index} segment {i+1}/{len(seg_result.segments)}",
-                        )
-                        r = recognizer.transcribe(seg.audio_path, language=transcribe_lang)
-                        if r.success and r.segments:
-                            for s in r.segments:
-                                s.start_time += ch_start + seg.start_time
-                                s.end_time += ch_start + seg.start_time
-                            all_segments.extend(r.segments)
-                else:
-                    r = recognizer.transcribe(ar.audio_path, language=transcribe_lang)
-                    if r.success and r.segments:
-                        for s in r.segments:
-                            s.start_time += ch_start
-                            s.end_time += ch_start
-                        all_segments.extend(r.segments)
-
-    if not use_cached_transcription:
-        source_lang_code = str(transcribe_lang or "src").strip().lower() or "src"
-        source_backup_path = subtitles_dir / f"{base}.{source_lang_code}.srt.bak"
-        try:
-            original_texts = [str(s.text or "") for s in all_segments]
-            source_cues = build_cues(
-                [s.start_time for s in all_segments],
-                [s.end_time for s in all_segments],
-                original_texts,
-            )
-            if source_cues:
-                write_srt(source_cues, source_backup_path)
-                logger.info(f"Saved Whisper transcript backup: {source_backup_path}")
-            else:
-                logger.info("No non-empty segments available for Whisper transcript backup; skipping")
-        except Exception as exc:
-            logger.warning(f"Failed to write Whisper transcript backup ({source_backup_path}): {exc}")
-
-        progress("transcribe", 100, f"Transcribed {len(all_segments)} segments")
-        timings_seconds["transcription"] = time.perf_counter() - t0_transcribe
-    else:
-        timings_seconds["transcription"] = 0.0
-
-    if not all_segments:
-        return {
-            "success": False,
-            "error": "Transcription produced 0 segments. Check Whisper configuration and logs.",
-            "timings_seconds": timings_seconds,
-        }
-
-    if not use_cached_transcription:
-        _save_cache(
-            cache_path,
-            {
-                "video_path": str(video_path),
-                "segments": [
-                    {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                    for s in all_segments
-                ],
-                "translated_texts": [],
-            },
-        )
-
+    recognizer = SpeechRecognizerFactory.create_recognizer(config)
     translator = TranslatorFactory.create_translator(config)
 
-    progress("translate", 0, "Translating...")
-    source_lang_eff = config.get("translation", {}).get("source_language", "ja")
-    target_lang_eff = config.get("translation", {}).get("target_language", "fr")
+    cache_path = _cache_file_path(subtitles_dir, output_basename, target_lang)
+    cache = _load_cache(cache_path) if resume else None
 
-    t0_translate = time.perf_counter()
-
-    translated_texts = []
-    if (
-        resume
-        and use_cached_transcription
-        and isinstance(cached_translated_texts, list)
-        and len(cached_translated_texts) <= len(all_segments)
-    ):
-        translated_texts = [str(x) for x in cached_translated_texts]
-
-    # Check if translator supports batching
-    service = config.get('translation', {}).get('service', '').lower()
-    if service == 'openai' and hasattr(translator, 'batch_size') and translator.batch_size > 1:
-        # Batched translation for OpenAI
-        batch_size = translator.batch_size
-        i = len(translated_texts)
-        while i < len(all_segments):
-            batch_end = min(i + batch_size, len(all_segments))
-            batch = [seg.text for seg in all_segments[i:batch_end]]
-            progress("translate", 100.0 * (i / max(1, len(all_segments))), f"Translating batch {i+1}-{batch_end}/{len(all_segments)}")
-            try:
-                r = translator.translate_segments(batch, source_lang_eff, target_lang_eff)
-            except Exception as e:
-                r = None
-                err = str(e)
-            else:
-                err = r.error if r and not r.success else None
-
-            if not r or not r.success or not r.segments:
-                _save_cache(
-                    cache_path,
-                    {
-                        "video_path": str(video_path),
-                        "segments": [
-                            {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                            for s in all_segments
-                        ],
-                        "translated_texts": translated_texts,
-                        "failed_at_index": i,
-                        "failed_text": batch[0] if batch else "",
-                        "error": err or "Translation failed",
-                    },
-                )
-                _print_fatal_error_block(
-                    "\n".join(
-                        [
-                            f"Failed to translate batch starting at segment {i+1}/{len(all_segments)} after retries.",
-                            f"Service: {service}",
-                            f"Error: {err or 'Translation failed'}",
-                            f"Cache saved: {cache_path}",
-                            "To resume from this point, re-run with: --resume",
-                        ]
-                    ),
-                )
-                timings_seconds["total"] = time.perf_counter() - t0_total
-                return {"success": False, "error": err or "Translation failed", "timings_seconds": timings_seconds}
-
-            # Extract translations in order
-            for seg in r.segments:
-                translated_texts.append(seg.translated_text)
-
-            _save_cache(
-                cache_path,
-                {
-                    "video_path": str(video_path),
-                    "segments": [
-                        {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                        for s in all_segments
-                    ],
-                    "translated_texts": translated_texts,
-                },
-            )
-            i = batch_end
+    if cache and cache.get("segments"):
+        logger.info(f"Resuming from cache: {cache_path} ({len(cache['segments'])} segments already translated)")
+        starts = cache["starts"]
+        ends = cache["ends"]
+        originals = cache["originals"]
+        translated = cache["segments"]
+        start_index = len(translated)
     else:
-        # Fallback to per-segment translation
-        for i, seg in enumerate(all_segments):
-            if i < len(translated_texts):
-                continue
+        start_time, end_time = time_range if time_range else (None, None)
+        audio_result = audio_processor.extract_audio(video_path, start_time, end_time)
+        if not audio_result.success:
+            raise RuntimeError(f"Audio extraction failed: {audio_result.error}")
 
-            progress("translate", 100.0 * (i / max(1, len(all_segments))), f"Segment {i+1}/{len(all_segments)}")
-            try:
-                r = translator.translate(seg.text, source_lang_eff, target_lang_eff)
-            except Exception as e:
-                r = None
-                err = str(e)
-            else:
-                err = r.error if r and not r.success else None
+        transcription = recognizer.transcribe(audio_result.audio_path, language=source_lang)
+        if not transcription.success:
+            raise RuntimeError(f"Transcription failed: {transcription.error}")
 
-            if not r or not r.success or not r.segments:
-                _save_cache(
-                    cache_path,
-                    {
-                        "video_path": str(video_path),
-                        "segments": [
-                            {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                            for s in all_segments
-                        ],
-                        "translated_texts": translated_texts,
-                        "failed_at_index": i,
-                        "failed_text": seg.text,
-                        "error": err or "Translation failed",
-                    },
-                )
-                _print_fatal_error_block(
-                    "\n".join(
-                        [
-                            f"Failed to translate segment {i+1}/{len(all_segments)} after retries.",
-                            f"Service: {service}",
-                            f"Error: {err or 'Translation failed'}",
-                            f"Cache saved: {cache_path}",
-                            "To resume from this point, re-run with: --resume",
-                        ]
-                    ),
-                )
-                timings_seconds["total"] = time.perf_counter() - t0_total
-                return {"success": False, "error": err or "Translation failed", "timings_seconds": timings_seconds}
+        offset = start_time or 0.0
+        starts = [seg.start_time + offset for seg in transcription.segments]
+        ends = [seg.end_time + offset for seg in transcription.segments]
+        originals = [seg.text for seg in transcription.segments]
+        translated = []
+        start_index = 0
 
-            translated_texts.append(r.segments[0].translated_text)
-            _save_cache(
-                cache_path,
-                {
-                    "video_path": str(video_path),
-                    "segments": [
-                        {"start_time": float(s.start_time), "end_time": float(s.end_time), "text": str(s.text)}
-                        for s in all_segments
-                    ],
-                    "translated_texts": translated_texts,
-                },
-            )
-
-    progress("translate", 100, f"Translated {len(translated_texts)} segments")
-    timings_seconds["translation"] = time.perf_counter() - t0_translate
-
-    starts = [s.start_time for s in all_segments]
-    ends = [s.end_time for s in all_segments]
-    fr_texts = translated_texts
-
-    cues = build_cues(starts, ends, fr_texts)
-
-    subtitle_path = _resolve_existing_destination(config, subtitles_dir / f"{base}.{tgt}.srt")
-    if subtitle_path.exists() and _get_overwrite_decision(config):
-        subtitle_path.unlink()
-
-    progress("subtitles", 0, "Writing SRT...")
-    write_srt(cues, subtitle_path)
-    progress("subtitles", 100, f"Wrote {subtitle_path.name}")
-
-    if not resume:
+    remaining = originals[start_index:]
+    if remaining:
         try:
-            if cache_path.exists():
-                cache_path.unlink()
-        except Exception:
-            pass
+            result = translator.translate_segments(remaining, source_lang, target_lang)
+        except Exception as e:
+            _save_cache(cache_path, {"starts": starts, "ends": ends, "originals": originals, "segments": translated})
+            _print_fatal_error_block(
+                f"{e}\n\nProgress saved to: {cache_path}\nRe-run with --resume to continue without re-running transcription."
+            )
+            raise SystemExit(1)
 
-    timings_seconds["total"] = time.perf_counter() - t0_total
-    timings_seconds["user_wait"] = float(config.get("_runtime", {}).get("user_wait_seconds") or 0.0)
+        if not result.success:
+            translated.extend(seg.translated_text for seg in (result.segments or []))
+            _save_cache(cache_path, {"starts": starts, "ends": ends, "originals": originals, "segments": translated})
+            _print_fatal_error_block(
+                f"{result.error}\n\nProgress saved to: {cache_path}\nRe-run with --resume to continue without re-running transcription."
+            )
+            raise SystemExit(1)
 
-    _cleanup_run_temp_dir(run_temp_dir, logger)
+        translated.extend(seg.translated_text for seg in result.segments)
 
-    return {
-        "success": True,
-        "video_path": str(video_path),
-        "subtitle_path": str(subtitle_path),
-        "title": title,
-        "segments": len(cues),
-        "timings_seconds": timings_seconds,
-        "quality_info": quality_info,
-    }
+    cues = build_cues(starts, ends, translated)
+    desired_path = subtitles_dir / f"{output_basename}.{target_lang}.srt"
+    output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
+    write_srt(cues, output_path)
+    logger.info(_green(f"Subtitles written: {output_path}"))
 
-    
+    cache_path.unlink(missing_ok=True)
+    return output_path
 
 
-def main():
-    parser = _HelpOnErrorArgumentParser(description="Generate French subtitles for Japanese videos (keeps original audio)")
-    parser.add_argument("input", help="YouTube URL or local video file path")
-    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
-    parser.add_argument("--config-local", default="config.local.yaml", help="Optional local override config (e.g. API keys)")
-    parser.add_argument("--source-type", choices=["youtube", "m3u8", "local", "auto"], default="auto")
-    parser.add_argument("--output-basename", default=None, help="Base filename for subtitle output (no extension)")
-    parser.add_argument(
-        "--dest",
-        default=None,
-        help="Destination folder for downloads/subtitles for this run (overrides video_download_directory)",
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = _HelpOnErrorArgumentParser(
+        description="Generate translated subtitles for a video (YouTube, .m3u8, or local file).",
+        add_help=False,
     )
+    parser.add_argument("input", help="YouTube URL, .m3u8 URL, or local video file path")
+    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    parser.add_argument("--config-local", default="config.local.yaml", help="Path to local secrets override")
     parser.add_argument("--h", action="help", help="Show this help message and exit")
-    parser.add_argument("--source-lang", default=None, help="Override source language (also used for transcription), e.g. ja, en")
+    parser.add_argument("--dest", default=None, help="Override destination folder for this run")
+    parser.add_argument("--source-lang", default=None, help="Override source language (transcription), e.g. ja, en")
     parser.add_argument("--target-lang", default=None, help="Override target language, e.g. fr")
-    parser.add_argument("--info", action="store_true", help="Download/prepare the input and print info (no transcription/translation)")
-    parser.add_argument("--dry-run", action="store_true", help="Print what would happen and exit (no download/transcription/translation)")
-    parser.add_argument("--download-only", "--d", action="store_true", help="Only download/prepare the input video then exit")
+    parser.add_argument("--info", action="store_true", help="Download/prepare the input and print info, then exit")
+    parser.add_argument("--dry-run", action="store_true", help="Print what would happen and exit")
+    parser.add_argument("--download-only", "--d", action="store_true", help="Only download/prepare the input, then exit")
     parser.add_argument("--chapters", "--c", default=None, help="1-based chapter selection for local files, e.g. 1,3-5")
     parser.add_argument("--autoselectchapters", "--asc", action="store_true", help="Auto-select chapters by regex patterns in config")
-    parser.add_argument("--listchapters", "--lc", action="store_true", help="List chapters and matching status (for testing patterns) without translating")
-    parser.add_argument("--resume", action="store_true", help="Resume a previous run from the last translated segment (uses cache)")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress display")
+    parser.add_argument("--listchapters", "--lc", action="store_true", help="List chapters and matching status, without translating")
+    parser.add_argument("--resume", action="store_true", help="Resume a previous run from the last translated segment")
+    return parser
 
+
+def main() -> int:
+    parser = build_arg_parser()
     args = parser.parse_args()
 
-    if args.source_type in ["local", "auto"] and not args.input.startswith(("http://", "https://")):
-        if not Path(args.input).exists():
-            print(f"File not found: {args.input}")
-            sys.exit(1)
+    config = load_config(args.config, args.config_local)
+    logger = _setup_logging(config)
 
-    config = _load_config_with_local(args.config, args.config_local)
-    _setup_logging(config)
+    source_lang = args.source_lang or config.get("translation", {}).get("source_language", "ja")
+    target_lang = args.target_lang or config.get("translation", {}).get("target_language", "fr")
 
-    invocation = os.environ.get("SPO_LAUNCH_CMD") or _format_invocation()
-    print(f"Command: {invocation}")
+    if args.dry_run:
+        print(f"Would process: {args.input}")
+        print(f"  source_type (auto-detected): {detect_source_type(args.input)}")
+        print(f"  source_lang={source_lang} target_lang={target_lang}")
+        print(f"  download_only={args.download_only}")
+        return 0
 
-    runtime_bucket = config.setdefault("_runtime", {})
-    runtime_bucket["invocation"] = invocation
+    run_temp_dir = _create_run_temp_dir(config, logger)
+    try:
+        source_type = detect_source_type(args.input)
 
-    if (
-        not args.dest
-        and args.source_type in ["local", "auto"]
-        and not args.input.startswith(("http://", "https://"))
-    ):
-        src_dir = str(Path(args.input).resolve().parent)
-        config.setdefault("output", {})["output_directory"] = src_dir
+        # --listchapters: inspect without extracting/transcribing/translating.
+        if args.listchapters:
+            if source_type != "local":
+                print("--listchapters only applies to local files.")
+                return 1
+            ffmpeg_path = str(config.get("video", {}).get("ffmpeg_path") or "ffmpeg")
+            chapters = _ffprobe_chapters(args.input, ffmpeg_path)
+            if not chapters:
+                print("No chapters found in this file.")
+                return 0
+            patterns = config.get("processing", {}).get("chapter_autoselect_patterns", [])
+            selected = set(_resolve_chapter_selection(chapters, args.chapters, args.autoselectchapters, patterns))
+            for idx, ch in enumerate(chapters):
+                title = str((ch.get("tags") or {}).get("title") or "")
+                mark = "[x]" if idx in selected else "[ ]"
+                print(f"{mark} {idx + 1}. {title} ({ch.get('start_time')} - {ch.get('end_time')})")
+            return 0
 
-    if args.dest:
-        dest = str(Path(args.dest).expanduser())
-        config.setdefault("_runtime", {})["dest_override"] = True
-        config.setdefault("output", {})["output_directory"] = dest
-        config.setdefault("output", {})["video_download_directory"] = dest
+        video_path, title, quality_warning = _prepare_input(args.input, config, logger)
+        if quality_warning:
+            print(_yellow(f"\nWARNING: {quality_warning}\n"))
 
-    res = generate_french_subtitles(
-        config=config,
-        input_source=args.input,
-        source_type=args.source_type,
-        output_basename=args.output_basename,
-        show_progress=not args.no_progress,
-        chapters=args.chapters,
-        autoselect_chapters=args.autoselectchapters,
-        list_chapters=args.listchapters,
-        source_lang=args.source_lang,
-        target_lang=args.target_lang,
-        download_only=args.download_only,
-        info_only=args.info,
-        dry_run=args.dry_run,
-        resume=args.resume,
-    )
+        if args.info:
+            print(f"Title: {title}")
+            print(f"Path: {video_path}")
+            return 0
 
-    print("\n" + "=" * 60)
-    if res.get("success"):
-        q = res.get("quality_info") or {}
-        downgraded = bool(isinstance(q, dict) and q.get("downgraded"))
-        if downgraded:
-            print(_yellow("WARNING"))
-            print("Downloaded video is not the best available quality (MP4-only selection).")
+        if args.download_only:
+            logger.info(_green(f"Download complete: {video_path}"))
+            return 0
+
+        output_cfg = config.get("output", {})
+        if args.dest:
+            subtitles_dir = Path(args.dest)
+        elif source_type == "local":
+            subtitles_dir = Path(video_path).parent
         else:
-            print(_green("SUCCESS"))
-        print(f"Video: {res['video_path']}")
-        print(f"Subtitles: {res['subtitle_path']}")
-        print(f"Segments: {res['segments']}")
+            subtitles_dir = Path(output_cfg.get("video_download_directory") or output_cfg.get("output_directory") or "./output")
+        subtitles_dir.mkdir(parents=True, exist_ok=True)
 
-        invocation = str(config.get("_runtime", {}).get("invocation") or "").strip()
-        if isinstance(q, dict) and q:
-            downloaded = q.get("downloaded") or {}
-            best_av = q.get("best_available") or {}
-            best_mp4 = q.get("best_mp4") or {}
+        output_basename = Path(video_path).stem if source_type == "local" else title
+        config.setdefault("_runtime", {}).update({"video_title": title, "video_filename": Path(video_path).name})
 
-            if invocation:
-                print(f"\nCommand: {invocation}")
-            print("\nVideo quality:")
-            if downloaded:
-                print(f"- Downloaded: {_fmt_quality(downloaded)}")
-            if best_av:
-                print(f"- Best available: {_fmt_quality(best_av)}")
-            if best_mp4:
-                print(f"- Best MP4: {_fmt_quality(best_mp4)}")
+        # Chapter selection (local files only).
+        if (args.chapters or args.autoselectchapters) and source_type == "local":
+            ffmpeg_path = str(config.get("video", {}).get("ffmpeg_path") or "ffmpeg")
+            chapters = _ffprobe_chapters(video_path, ffmpeg_path)
+            patterns = config.get("processing", {}).get("chapter_autoselect_patterns", [])
+            selected_idx = _resolve_chapter_selection(chapters, args.chapters, args.autoselectchapters, patterns)
 
-        timings = res.get("timings_seconds") or {}
-        if isinstance(timings, dict) and timings:
-            def fmt(sec: Optional[float]) -> str:
-                if sec is None:
-                    return "n/a"
-                try:
-                    return f"{float(sec):.2f}s"
-                except Exception:
-                    return "n/a"
+            if not selected_idx:
+                ans = input("No chapters matched the requested selection. Translate the whole file instead? (y/n): ").strip().lower()
+                if ans != "y":
+                    return 1
+                selected_idx = None
 
-            print("\nTimings:")
-            if "metadata" in timings:
-                print(f"- Metadata/preflight: {fmt(timings.get('metadata'))}")
-            if "user_wait" in timings:
-                print(f"- User confirmations: {fmt(timings.get('user_wait'))}")
-            if "download" in timings:
-                print(f"- Download: {fmt(timings.get('download'))}")
-            else:
-                print("- Download: n/a (local input)")
+            if selected_idx:
+                for i in selected_idx:
+                    ch = chapters[i]
+                    time_range = (float(ch["start_time"]), float(ch["end_time"]))
+                    basename = f"{output_basename}_ch{i + 1}"
+                    _translate_and_write(
+                        config=config, logger=logger, video_path=video_path, output_basename=basename,
+                        subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang,
+                        resume=args.resume, time_range=time_range,
+                    )
+                return 0
 
-            tr = timings.get("transcription")
-            if tr == 0.0 and args.resume:
-                print("- Transcription: 0.00s (cached)")
-            else:
-                print(f"- Transcription: {fmt(tr)}")
-
-            print(f"- Translation: {fmt(timings.get('translation'))}")
-            if "total" in timings:
-                print(f"- Total: {fmt(timings.get('total'))}")
-    else:
-        print(_red("FAILED"))
-        print(res.get("error", "Unknown error"))
-        sys.exit(1)
+        _translate_and_write(
+            config=config, logger=logger, video_path=video_path, output_basename=output_basename,
+            subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang, resume=args.resume,
+        )
+        return 0
+    finally:
+        _cleanup_run_temp_dir(run_temp_dir, logger)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

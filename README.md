@@ -1,331 +1,62 @@
-# Translate subtitles (YouTube or local video)
+# spo-translate-video
 
-This project generates **subtitles (.srt)** for **videos**, while keeping the **original audio**.
+Generates translated **subtitles (`.srt`)** for a video (YouTube, `.m3u8` stream, or local file), while keeping the **original audio** untouched.
 
-## What it does
+> **Full specification:** see [`SPECIFICATIONS.md`](./SPECIFICATIONS.md) — the source of truth for this project (features, config, install, maintenance, troubleshooting). This README is just a quick-start.
 
-- Download video from YouTube, download from an `.m3u8` URL, or use a local file
-- Extract audio
-- Transcribe speech to text (Whisper)
-- Translate to target language (DeepL or OpenAI)
-- Write subtitles as `<subtitles_directory>/<name>.<target_lang>.srt`
-
-## Requirements
-
-- Python 3.10+
-- FFmpeg installed and available in PATH (includes `ffprobe`)
-
-## Install
-
-```bash
-pip install -r requirements.txt
-```
-
-## Windows quick runner (.bat)
-
-If you want to run the project without manually activating the virtual environment each time, use:
-
-```bat
-spo-translate-video.bat <same arguments as main.py>
-```
-
-What it does:
-
-- Creates `.venv` if it doesn't exist
-- Installs dependencies once (from `requirements.txt`)
-- Runs `main.py` and passes through all arguments
-
-## Browser integration (Windows): one-click from YouTube
-
-You can trigger the scripts directly from a YouTube page using a Windows custom URL protocol handler.
-
-This gives a mouse-only workflow:
-
-- Click a bookmarklet (or a link)
-- Confirm the browser prompt to open an external application (if shown)
-- A Windows Terminal window opens and runs the script
-
-### Install protocol handlers (per user, no admin)
-
-Run this once in PowerShell:
+## Quick start
 
 ```powershell
-./install-protocol-handlers.ps1
+# 1. Install prerequisites: Python 3.10+, ffmpeg, Node.js LTS (see SPECIFICATIONS.md section 7)
+
+# 2. Configure secrets
+copy config.local.yaml.example config.local.yaml
+# edit config.local.yaml and fill in your DeepL/OpenAI API keys
+
+# 3. (Optional) Customize translation prompts for this project
+copy config.prompt.example.yaml config.prompt.yaml
+# edit config.prompt.yaml, mainly system_prompt_extended
+
+# 4. Run (creates .venv and installs dependencies on first run)
+.\spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-It installs:
-
-- `spodl:` -> runs `spo-dl-video.bat` (download-only)
-- `spotr:` -> runs `spo-translate-video.bat` (download + translate)
-
-To uninstall:
+## Common commands
 
 ```powershell
-./uninstall-protocol-handlers.ps1
+# Download only, no transcription/translation
+.\spo-dl-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Local file
+.\spo-translate-video.bat "C:\path\to\video.mkv"
+
+# Override languages
+.\spo-translate-video.bat "C:\path\to\video.mp4" --source-lang en --target-lang fr
+
+# Resume a failed run (skips re-running Whisper)
+.\spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --resume
 ```
 
-### Bookmarklets (recommended)
-
-Create 2 bookmarks in Chrome and set their URL to the JavaScript below.
-
-They:
-
-- work on the current tab
-- remove playlist/list noise (like `list=` / `index=`)
-- remove all other query params (keeps only `v=`)
-
-#### Download only
-
-```text
-javascript:(()=>{try{const u=new URL(location.href);let v=u.searchParams.get('v');if(!v&&u.hostname.includes('youtu.be'))v=u.pathname.split('/').filter(Boolean)[0]||'';if(!v&&u.pathname.startsWith('/shorts/'))v=u.pathname.split('/')[2]||'';if(!v){alert('Not a supported YouTube page (watch, shorts, youtu.be)');return;}location.href='spodl:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
-```
-
-#### Download + translate
-
-```text
-javascript:(()=>{try{const u=new URL(location.href);let v=u.searchParams.get('v');if(!v&&u.hostname.includes('youtu.be'))v=u.pathname.split('/').filter(Boolean)[0]||'';if(!v&&u.pathname.startsWith('/shorts/'))v=u.pathname.split('/')[2]||'';if(!v){alert('Not a supported YouTube page (watch, shorts, youtu.be)');return;}location.href='spotr:'+encodeURIComponent(v);}catch(e){alert('Error: '+e);}})();
-```
-
-## Configure
-
-Edit `config.yaml`.
-
-### Secrets (recommended)
-
-Create a `config.local.yaml` next to `config.yaml` and put secrets there. This file is ignored by Git via `.gitignore`.
-
-Example:
-
-```yaml
-translation:
-  api_keys:
-    deepl: "YOUR_DEEPL_KEY"
-    openai: "YOUR_OPENAI_KEY"
-```
-
-### DeepL (recommended default)
-
-- Set:
-  - `translation.service: "deepl"`
-- DeepL plan:
-  - `translation.deepl.plan: "free"` (default) or `"pro"`
-- Provide a key via `config.local.yaml` (recommended), or via environment variable:
-
-```bash
-set DEEPL_API_KEY=your_key
-```
-
-(or put it in `config.yaml` under `translation.api_keys.deepl`)
-
-### OpenAI
-
-- Set:
-  - `translation.service: "openai"`
-  - `translation.openai.model: "gpt-4o-mini"` (or whichever you prefer)
-- Provide a key via `config.local.yaml` (recommended), or via environment variable:
-
-```bash
-set OPENAI_API_KEY=your_key
-```
-
-### Custom prompt placeholders (OpenAI)
-
-If you use `translation.service: "openai"`, you can customize prompts via `translation.custom_prompts`.
-
-Both `system_prompt` and `user_prompt_template` support placeholders:
-
-- `{text}` (the current segment text being translated; the app fills it automatically)
-- `{source_language}` (language code, e.g. `ja`)
-- `{target_language}` (language code, e.g. `fr`)
-- `{source_language_name}` (human name, e.g. `Japanese`)
-- `{target_language_name}` (human name, e.g. `French`)
-
-You can use either the language *codes* (`{source_language}`, `{target_language}`) or the human-readable language *names* (`{source_language_name}`, `{target_language_name}`), depending on what you prefer in the prompt. You don’t need to include both.
-
-## Run
-
-### From YouTube
-
-```bat
-spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-### Download only (no transcription / no translation)
-
-Use `--download-only` (alias: `--d`) to only download/prepare the input video and then exit.
-
-```bat
-spo-dl-video.bat "https://www.youtube.com/watch?v=VIDEO_ID"
-```
-
-The downloaded `.mp4` filename is based on the YouTube title (sanitized for Windows).
-
-### Destination folder override
-
-By default, destination folders come from `config.yaml`:
-
-- `output.video_download_directory`
-
-Subtitle output rules (when `--dest` is not set):
-
-- Downloads (YouTube / m3u8): subtitles are written next to the downloaded video, i.e. `output.video_download_directory`
-- Local files: subtitles are written next to the source video file
-
-Use `--dest` to override those destinations for a single run:
-
-```bat
-spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --dest "C:\\Temp"
-```
-
-### Local file
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mp4"
-```
-
-### From an .m3u8 URL
-
-```bat
-spo-translate-video.bat "https://example.com/path/stream.m3u8"
-```
-
-## Chapter selection (local files)
-
-If your local file contains embedded chapters, you can translate only selected chapters.
-
-### Select chapters by number (1-based)
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --chapters "2,5-6"
-```
-
-### Auto-select chapters by chapter title
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --autoselectchapters
-```
-
-Auto-select uses `processing.chapter_autoselect_patterns` from `config.yaml` (regex, case-insensitive). Default patterns include chapters starting with `MC`, and chapters named `Intro`/`Outro`.
-
-### Test patterns (no extraction / no translation)
-
-To verify that your `chapter_autoselect_patterns` match the chapters you expect, you can list chapters and matching status without doing any audio extraction / transcription / translation:
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mkv" --autoselectchapters --listchapters
-```
-
-You can also list chapters and show which ones would be selected by a manual chapter selection:
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mkv" --chapters "2,5-6" --listchapters
-```
-
-### Combine manual + auto selection
-
-You can combine `--chapters` and `--autoselectchapters`. The program will take the **union** (all chapters that match either selection).
-
-## Resume / recovery mode
-
-If translation fails mid-run (for example due to rate limiting), the program will **stop immediately** (fail-fast) and save a cache file next to the subtitles output directory.
-
-Re-run with `--resume` to continue translating from the last completed segment without re-running Whisper/transcription:
-
-```bat
-spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --resume
-```
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mkv" --source-type local --chapters "2,5-6" --autoselectchapters
-```
-
-If you request chapter selection but the file has no chapters (or nothing matches), the program will ask whether to translate the whole file (`y`) or stop.
-
-## Output
-
-- Downloaded videos: `output.video_download_directory`
-
-Subtitles are generated:
-
-- For downloads: in `output.video_download_directory`
-- For local files: in the source video directory
-
-Example output subtitle:
-
-- `<output_folder>/<video_basename>.fr.srt`
-
-## Temp files and cleanup
-
-- Intermediate files are stored in `video.temp_directory`.
-- If `processing.clean_temp_on_start: true`, the temp directory is cleaned at the start of each run.
-- YouTube sidecar metadata files (like `.info.json`) are written to the temp folder and cleaned on the next run.
-
-## JavaScript runtime requirement (Node.js)
-
-YouTube now requires yt-dlp to run a JavaScript engine to solve extraction challenges. yt-dlp only auto-enables **Deno**, so on Windows the easiest fix is to install **Node.js LTS** and point the config to it:
-
-```yaml
-video:
-  youtube_js_runtime:
-    runtime: "node"           # required
-    path: ""                  # leave empty if node.exe is on PATH
-  youtube_remote_components:
-    enable: true
-    components:
-      - "ejs:github"          # pulls yt-dlp's challenge solver scripts
-```
-
-If Node is already in `PATH`, leaving `path` empty is enough. Otherwise set it explicitly, e.g. `"C:/Program Files/nodejs/node.exe"`.
-
-If yt-dlp logs `WARNING: [youtube] No supported JavaScript runtime could be found...`, the downloader now echoes an additional warning telling you to install Node.js or update `video.youtube_js_runtime`. Once Node is available, the warning disappears and format extraction succeeds. If yt-dlp warns about skipping the "remote component challenge solver script", make sure `youtube_remote_components` is enabled as above or run with `--remote-components ejs:github`.
-
-### Keep yt-dlp up to date
-
-When YouTube tightens its protections, yt-dlp often ships fixes quickly. Update the copy inside this project’s virtual environment with:
+## One-click from a YouTube page (Windows)
 
 ```powershell
-cd c:\Dev\CascadeProjects\spo-translate-video
-.\.venv\Scripts\python -m pip install --upgrade yt-dlp
-.\.venv\Scripts\python -m yt_dlp --version
+.\install-protocol-handlers.ps1
 ```
 
-Run the first command whenever you need the latest solver. The second command confirms which version is active inside the venv that `spo-translate-video` uses.
+Then add the two bookmarklets described in `SPECIFICATIONS.md` (section 2.2) to your browser. This registers the `spodl:`/`spotr:` custom URL protocols for your user account (no admin rights needed, no background process).
 
-## Overwrite behavior
+To uninstall: `.\uninstall-protocol-handlers.ps1`
 
-If an output file already exists, the program will ask once per run:
+## Configuration files
 
-- `Overwrite? (y/n)`
+| File | Purpose | Tracked by Git |
+|---|---|---|
+| `config.yaml` | Technical settings (default) | Yes |
+| `config.local.yaml` | API keys/secrets | No (gitignored) |
+| `config.prompt.yaml` | Translation prompts (`system_prompt`, `system_prompt_extended`) | Yes (not a secret) |
 
-If you answer `y`, it overwrites.
-If you answer `n`, it creates a new filename using `_1`, `_2`, ... up to `_100`.
+See `SPECIFICATIONS.md` sections 5 and 6 for details.
 
-## Notes
+## Everything else
 
-- Translation quality: **DeepL** tends to be the best default
-- OpenAI can be better for context-heavy lines, but is generally slower/costlier.
-
-## DeepL rate limiting (HTTP 429)
-
-If DeepL (or OpenAI) returns a rate limit / transient error (e.g. `HTTP 429 Too Many Requests`), the program will retry the request with **bounded exponential backoff** (it will not retry forever).
-
-You can tune the retry behavior in `config.yaml` under `translation.retry`:
-
-- `max_retries`
-- `initial_delay_seconds`
-- `max_delay_seconds`
-- `backoff_multiplier`
-- `jitter_ratio`
-
-You can override these per service (optional) under `translation.deepl` or `translation.openai`.
-
-## Language settings
-
-- Transcription language uses `translation.source_language`
-- Translation target uses `translation.target_language`
-
-You can override them per run with CLI flags:
-
-```bat
-spo-translate-video.bat "C:\path\to\video.mp4" --source-lang en --target-lang fr
-```
+Options, pipeline details, chapter selection, resume/cache behavior, supported tools, maintenance/update commands, and troubleshooting are all documented in [`SPECIFICATIONS.md`](./SPECIFICATIONS.md).

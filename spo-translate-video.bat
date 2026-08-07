@@ -15,6 +15,7 @@ if "%PY_CMD%"=="" (
 if "%PY_CMD%"=="" (
   echo ERROR: Python not found. Install Python 3.10+ and ensure it is on PATH.
   popd >nul
+  pause
   exit /b 1
 )
 
@@ -25,6 +26,7 @@ if not exist ".venv\Scripts\python.exe" (
   if errorlevel 1 (
     echo ERROR: Failed to create virtual environment.
     popd >nul
+    pause
     exit /b 1
   )
 )
@@ -36,6 +38,7 @@ if not exist ".venv\deps_installed.marker" (
   if errorlevel 1 (
     echo ERROR: Failed to upgrade pip.
     popd >nul
+    pause
     exit /b 1
   )
 
@@ -43,6 +46,7 @@ if not exist ".venv\deps_installed.marker" (
   if errorlevel 1 (
     echo ERROR: Failed to install dependencies.
     popd >nul
+    pause
     exit /b 1
   )
 
@@ -50,9 +54,13 @@ if not exist ".venv\deps_installed.marker" (
 )
 
 REM Run the app (pass all arguments through)
-set "SPO_LAUNCH_CMD=%~nx0 %*"
 call ".venv\Scripts\python.exe" main.py %*
 set EXIT_CODE=%ERRORLEVEL%
 
 popd >nul
+if not "%EXIT_CODE%"=="0" (
+  echo.
+  echo Command exited with code %EXIT_CODE%.
+  pause
+)
 exit /b %EXIT_CODE%
