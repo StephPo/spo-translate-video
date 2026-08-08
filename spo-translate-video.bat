@@ -53,6 +53,20 @@ if not exist ".venv\deps_installed.marker" (
   type nul > ".venv\deps_installed.marker"
 )
 
+REM Periodically refresh yt-dlp: YouTube extraction breaks frequently, and yt-dlp ships fixes
+REM very often (see SPECIFICATIONS.md section 8) — an install pinned once via the marker above
+REM can silently fall many releases behind. Re-check for updates at most once every 7 days.
+set YTDLP_MARKER=.venv\yt_dlp_last_update.marker
+set NEEDS_YTDLP_UPDATE=1
+if exist "%YTDLP_MARKER%" (
+  for /f %%A in ('powershell -NoProfile -Command "if ((Get-Date) -lt (Get-Item '%YTDLP_MARKER%').LastWriteTime.AddDays(7)) { '0' } else { '1' }" 2^>nul') do set NEEDS_YTDLP_UPDATE=%%A
+)
+if "%NEEDS_YTDLP_UPDATE%"=="1" (
+  echo Checking for yt-dlp updates ^(YouTube support changes frequently^)...
+  call ".venv\Scripts\python.exe" -m pip install --upgrade yt-dlp >nul 2>nul
+  type nul > "%YTDLP_MARKER%"
+)
+
 REM Run the app (pass all arguments through)
 call ".venv\Scripts\python.exe" main.py %*
 set EXIT_CODE=%ERRORLEVEL%

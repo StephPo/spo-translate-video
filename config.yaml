@@ -62,6 +62,15 @@ video:
     enable: true
     components:
       - "ejs:github"
+  # YouTube player clients yt-dlp should query (in order). Includes "tv" alongside the default
+  # clients because YouTube's "SABR-only streaming" rollout (see SPECIFICATIONS.md section 4.2)
+  # can cause some default clients (e.g. android_vr) to expose only low-resolution formats;
+  # "tv" is unaffected as of this writing. Leave empty to use yt-dlp's own default client list.
+  youtube_player_clients: ["default", "tv"]
+  # Total attempts (including the first) when the downloaded YouTube quality is degraded or a
+  # SABR-related warning is detected. YouTube's SABR rollout is applied per-request/session, so
+  # retrying is effectively a new roll of the dice each time (see SPECIFICATIONS.md section 4.2).
+  youtube_quality_max_attempts: 3
 
 processing:
   log_level: "INFO"

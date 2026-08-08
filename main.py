@@ -133,6 +133,25 @@ def _setup_logging(config: Dict[str, Any]) -> logging.Logger:
     return logging.getLogger("spo_translate_video")
 
 
+def _describe_invocation_command() -> str:
+    """Best-effort reconstruction of the command line to reproduce this exact run.
+
+    `spo-translate-video.bat` forwards its arguments unchanged to `python main.py` (and
+    `spo-dl-video.bat` is equivalent, just with `--download-only` appended), so reconstructing
+    the `.bat` invocation from `sys.argv` is accurate regardless of which entry point (bookmarklet,
+    protocol handler, or direct `.bat` call) was actually used to start this run.
+    """
+    bat_path = Path(__file__).resolve().parent / "spo-translate-video.bat"
+
+    def _quote(arg: str) -> str:
+        if arg == "" or any(c in arg for c in (" ", "\t", '"')):
+            return '"' + arg.replace('"', '\\"') + '"'
+        return arg
+
+    args_str = " ".join(_quote(a) for a in sys.argv[1:])
+    return f"{bat_path} {args_str}".rstrip()
+
+
 # --------------------------------------------------------------------------
 # Temp directory management (per-run, with pruning of old runs)
 # --------------------------------------------------------------------------
@@ -289,14 +308,14 @@ def _listchapters_selection_preview(chapters: List[Dict[str, Any]], manual_spec:
 # Pipeline
 # --------------------------------------------------------------------------
 
-def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) -> Tuple[str, str, Optional[str]]:
-    """Return (video_path, title_for_output, quality_warning)."""
+def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) -> Tuple[str, str, Optional[str], Optional[str]]:
+    """Return (video_path, title_for_output, quality_info, quality_warning)."""
     source_type = detect_source_type(source)
     logger.info(f"Detected source type: {source_type}")
 
     if source_type == "local":
         p = Path(source)
-        return str(p), p.stem, None
+        return str(p), p.stem, None, None
 
     downloader = VideoDownloader(config)
     if source_type == "youtube":
@@ -308,7 +327,7 @@ def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) 
         raise RuntimeError(f"Download failed: {result.error}")
 
     title = result.title or Path(result.video_path).stem
-    return result.video_path, title, result.quality_warning
+    return result.video_path, title, result.quality_info, result.quality_warning
 
 
 def _translate_range(
@@ -425,6 +444,7 @@ def main() -> int:
 
     config = load_config(args.config, args.config_local)
     logger = _setup_logging(config)
+    logger.info(f"Command: {_describe_invocation_command()}")
 
     source_lang = args.source_lang or config.get("translation", {}).get("source_language", "ja")
     target_lang = args.target_lang or config.get("translation", {}).get("target_language", "fr")
@@ -458,9 +478,11 @@ def main() -> int:
                 print(f"{mark} {idx + 1}. {title} ({ch.get('start_time')} - {ch.get('end_time')})")
             return 0
 
-        video_path, title, quality_warning = _prepare_input(args.input, config, logger)
+        video_path, title, quality_info, quality_warning = _prepare_input(args.input, config, logger)
+        if quality_info:
+            print(_green(quality_info))
         if quality_warning:
-            print(_yellow(f"\nWARNING: {quality_warning}\n"))
+            print(_yellow(f"\n{quality_warning}\n"))
 
         if args.info:
             print(f"Title: {title}")
