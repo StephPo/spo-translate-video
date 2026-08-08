@@ -43,7 +43,7 @@ copy config.prompt.example.yaml config.prompt.yaml
 .\install-protocol-handlers.ps1
 ```
 
-Then add the two bookmarklets described in `SPECIFICATIONS.md` (section 2.2) to your browser. This registers the `spodl:`/`spotr:` custom URL protocols for your user account (no admin rights needed, no background process).
+Then add the two bookmarklets to your browser: the JavaScript code is in `SPECIFICATIONS.md` section 2.2, and the step-by-step browser instructions (Chrome/Edge/Firefox) are in section 7.3. This registers the `spodl:`/`spotr:` custom URL protocols for your user account (no admin rights needed, no background process).
 
 To uninstall: `.\uninstall-protocol-handlers.ps1`
 

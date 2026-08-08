@@ -133,10 +133,10 @@ class VideoDownloader:
     def _build_js_runtime(name: str, path: str):
         if not name:
             return None
-        entry: Dict[str, Any] = {"name": name}
+        entry: Dict[str, Any] = {}
         if path:
             entry["path"] = path
-        return [entry]
+        return {name: entry}
 
     def _base_ydl_opts(self, logger: _YtDlpLogger) -> Dict[str, Any]:
         opts: Dict[str, Any] = {
@@ -232,7 +232,8 @@ class VideoDownloader:
             if final_path.suffix.lower() != ".mp4":
                 final_path = self._remux_to_mp4(downloaded_path)
 
-            dest_path = self.download_dir / final_path.name
+            sanitized_title = self._sanitize_filename(info.get("title") or "video")
+            dest_path = self.download_dir / f"{sanitized_title}{final_path.suffix}"
             if str(final_path) != str(dest_path):
                 final_path.replace(dest_path)
                 final_path = dest_path
@@ -261,7 +262,7 @@ class VideoDownloader:
         dest_path = src_path.with_suffix(".mp4")
         cmd = [self.ffmpeg_path, "-y", "-i", str(src_path), "-c", "copy", str(dest_path)]
         self.logger.info(f"Remuxing to mp4 (stream copy, no re-encoding): {' '.join(cmd)}")
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg remux to mp4 failed: {proc.stderr[-2000:]}")
         src_path.unlink(missing_ok=True)
@@ -281,7 +282,7 @@ class VideoDownloader:
                 str(dest),
             ]
             self.logger.info(f"Downloading m3u8 via ffmpeg -> {dest}")
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
             if proc.returncode != 0:
                 return DownloadResult(success=False, error=f"ffmpeg failed: {proc.stderr[-2000:]}")
             return DownloadResult(success=True, video_path=str(dest), title=base)

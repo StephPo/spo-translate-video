@@ -17,7 +17,7 @@ import yaml
 
 from audio_processor import AudioProcessor
 from speech_recognizer import SpeechRecognizerFactory
-from subtitle_writer import build_cues, write_srt
+from subtitle_writer import SubtitleCue, build_cues, write_srt
 from translator import TranslatorFactory
 from video_downloader import VideoDownloader, detect_source_type
 
@@ -226,7 +226,7 @@ def _resolve_output_path(desired_path: Path, overwrite_decision: Dict[str, bool]
 def _ffprobe_chapters(video_path: str, ffmpeg_path: str) -> List[Dict[str, Any]]:
     ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe") if "ffmpeg" in ffmpeg_path else "ffprobe"
     cmd = [ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_chapters", video_path]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if proc.returncode != 0:
         return []
     try:
@@ -275,6 +275,16 @@ def _resolve_chapter_selection(chapters: List[Dict[str, Any]], manual_spec: Opti
     return sorted(selected)
 
 
+def _listchapters_selection_preview(chapters: List[Dict[str, Any]], manual_spec: Optional[str],
+                                     autoselectchapters: bool, patterns: List[str]) -> List[int]:
+    """Selection preview used by --listchapters: always includes the auto-selected
+    chapters (matching processing.chapter_autoselect_patterns), regardless of whether
+    --autoselectchapters was passed, so users can quickly browse a video's chapters and
+    validate their regex patterns in a single command. Any manual --chapters selection
+    is still combined in, as usual."""
+    return _resolve_chapter_selection(chapters, manual_spec, True, patterns)
+
+
 # --------------------------------------------------------------------------
 # Pipeline
 # --------------------------------------------------------------------------
@@ -301,11 +311,14 @@ def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) 
     return result.video_path, title, result.quality_warning
 
 
-def _translate_and_write(
+def _translate_range(
     *, config: Dict[str, Any], logger: logging.Logger, video_path: str, output_basename: str,
     subtitles_dir: Path, source_lang: str, target_lang: str, resume: bool,
     time_range: Optional[Tuple[float, float]] = None,
-) -> Path:
+) -> List[SubtitleCue]:
+    """Transcribe and translate a (portion of a) video, returning subtitle cues
+    without writing them to disk. `output_basename` is only used for the cache
+    file name."""
     audio_processor = AudioProcessor(config)
     recognizer = SpeechRecognizerFactory.create_recognizer(config)
     translator = TranslatorFactory.create_translator(config)
@@ -359,12 +372,24 @@ def _translate_and_write(
         translated.extend(seg.translated_text for seg in result.segments)
 
     cues = build_cues(starts, ends, translated)
+    cache_path.unlink(missing_ok=True)
+    return cues
+
+
+def _translate_and_write(
+    *, config: Dict[str, Any], logger: logging.Logger, video_path: str, output_basename: str,
+    subtitles_dir: Path, source_lang: str, target_lang: str, resume: bool,
+    time_range: Optional[Tuple[float, float]] = None,
+) -> Path:
+    cues = _translate_range(
+        config=config, logger=logger, video_path=video_path, output_basename=output_basename,
+        subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang,
+        resume=resume, time_range=time_range,
+    )
     desired_path = subtitles_dir / f"{output_basename}.{target_lang}.srt"
     output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
     write_srt(cues, output_path)
     logger.info(_green(f"Subtitles written: {output_path}"))
-
-    cache_path.unlink(missing_ok=True)
     return output_path
 
 
@@ -426,7 +451,7 @@ def main() -> int:
                 print("No chapters found in this file.")
                 return 0
             patterns = config.get("processing", {}).get("chapter_autoselect_patterns", [])
-            selected = set(_resolve_chapter_selection(chapters, args.chapters, args.autoselectchapters, patterns))
+            selected = set(_listchapters_selection_preview(chapters, args.chapters, args.autoselectchapters, patterns))
             for idx, ch in enumerate(chapters):
                 title = str((ch.get("tags") or {}).get("title") or "")
                 mark = "[x]" if idx in selected else "[ ]"
@@ -455,7 +480,7 @@ def main() -> int:
             subtitles_dir = Path(output_cfg.get("video_download_directory") or output_cfg.get("output_directory") or "./output")
         subtitles_dir.mkdir(parents=True, exist_ok=True)
 
-        output_basename = Path(video_path).stem if source_type == "local" else title
+        output_basename = Path(video_path).stem
         config.setdefault("_runtime", {}).update({"video_title": title, "video_filename": Path(video_path).name})
 
         # Chapter selection (local files only).
@@ -472,15 +497,25 @@ def main() -> int:
                 selected_idx = None
 
             if selected_idx:
+                all_cues: List[SubtitleCue] = []
                 for i in selected_idx:
                     ch = chapters[i]
                     time_range = (float(ch["start_time"]), float(ch["end_time"]))
                     basename = f"{output_basename}_ch{i + 1}"
-                    _translate_and_write(
+                    chapter_cues = _translate_range(
                         config=config, logger=logger, video_path=video_path, output_basename=basename,
                         subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang,
                         resume=args.resume, time_range=time_range,
                     )
+                    all_cues.extend(chapter_cues)
+
+                for idx, cue in enumerate(all_cues, start=1):
+                    cue.index = idx
+
+                desired_path = subtitles_dir / f"{output_basename}.{target_lang}.srt"
+                output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
+                write_srt(all_cues, output_path)
+                logger.info(_green(f"Subtitles written: {output_path}"))
                 return 0
 
         _translate_and_write(

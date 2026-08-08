@@ -54,7 +54,7 @@ class AudioProcessor:
             cmd += [str(out_path)]
 
             self.logger.info(f"Extracting audio: {' '.join(cmd)}")
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
             if proc.returncode != 0:
                 return AudioProcessingResult(success=False, error=f"ffmpeg failed: {proc.stderr[-2000:]}")
 

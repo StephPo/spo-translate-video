@@ -1,0 +1,5 @@
+# Copier ce fichier en test_urls.yaml (non versionné) et renseigner de vraies URLs de test.
+# Ces URLs sont utilisées par les tests d'intégration (tests/integration/) qui nécessitent
+# un accès réseau réel à YouTube. Choisir des vidéos courtes et stables.
+
+youtube_url: "https://www.youtube.com/watch?v=XXXXXXXXXXX"

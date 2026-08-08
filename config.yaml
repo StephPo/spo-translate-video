@@ -14,8 +14,8 @@ output:
   subtitle_format: "srt"
 
 translation:
-  # Active service: "deepl" (recommended default) or "openai"
-  service: "deepl"
+  # Active service: "deepl" or "openai" (recommended default)
+  service: "openai"
   source_language: "ja"
   target_language: "fr"
   retry:

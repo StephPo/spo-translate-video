@@ -107,6 +107,22 @@ Même pipeline que le mode CLI (§2.1)
   - extraient l'identifiant vidéo YouTube (`watch?v=`, `youtu.be/`, `/shorts/`) ;
   - ignorent les paramètres de playlist / tracking.
 
+**Code des deux bookmarklets** (à coller tel quel comme URL d'un favori) :
+
+Bookmarklet "SPO Download" (`spodl:`, téléchargement seul) :
+
+```
+javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(!m){alert('Aucun ID vidéo YouTube trouve dans cette page.');return;}location.href='spodl:'+m[1];})();
+```
+
+Bookmarklet "SPO Translate" (`spotr:`, téléchargement + transcription + traduction) :
+
+```
+javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(!m){alert('Aucun ID vidéo YouTube trouve dans cette page.');return;}location.href='spotr:'+m[1];})();
+```
+
+Ces deux extraits produisent respectivement une navigation vers `spodl:VIDEO_ID` et `spotr:VIDEO_ID`, conformément au mécanisme ci-dessus. Voir §7.3 pour la procédure d'ajout au navigateur.
+
 **Exigence de fiabilité (corrige le bug connu "l'invite de commande s'ouvre, reste quelques instants, puis se ferme sans rien exécuter") :**
 
 Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur silencieuse dans `spo-protocol-handler.ps1`, association de protocole mal enregistrée, échec avant l'ouverture de la fenêtre `cmd`, etc.) n'a pas encore été diagnostiquée avec certitude. Tant qu'il n'est pas corrigé à la racine, le programme doit **au minimum garantir que l'utilisateur est informé sur le moment**, avec assez d'informations pour relancer, débugger, ou corriger lui-même :
@@ -154,7 +170,7 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
 | `--download-only` | `--d` | Télécharge/prépare uniquement, puis s'arrête |
 | `--chapters` | `--c` | Sélection manuelle de chapitres, 1-based, ex. `"2,5-6"` (fichiers locaux) |
 | `--autoselectchapters` | `--asc` | Sélection automatique de chapitres par regex (config) |
-| `--listchapters` | `--lc` | Liste les chapitres et leur statut de correspondance, sans traiter |
+| `--listchapters` | `--lc` | Liste les chapitres et leur statut de correspondance, sans traiter. **Prévisualise toujours l'auto-sélection** (motifs `chapter_autoselect_patterns`), même sans `--autoselectchapters` — permet de vérifier rapidement ses regex sur une vidéo donnée. Une sélection manuelle `--chapters` fournie en même temps reste combinée (union) comme d'habitude |
 | `--resume` | — | Reprend un run précédent depuis le dernier segment traduit (cache) |
 
 > Options retirées volontairement par rapport à la version précédente : `--source-type` (détection auto systématique), `--output-basename` (le nom par défaut basé sur le titre/fichier source convient), `--no-progress` (l'affichage de progression est toujours utile, jugé non gênant).
@@ -170,7 +186,8 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
     - la raison si elle est connue (ex. format restreint, nécessite authentification) ;
     - la commande à relancer manuellement pour forcer un format précis (ex. `yt-dlp -f <format_id> <url>`) pour investiguer/corriger soi-même ;
     - ne bloque pas le run (l'utilisateur peut vouloir continuer quand même), mais l'information doit être impossible à manquer (bloc encadré, comme les erreurs fatales).
-  - Nom de fichier basé sur le titre YouTube, assaini pour Windows (`restrictfilenames`).
+  - Nom de fichier final basé sur le **titre brut YouTube, assaini** (caractères interdits sous Windows `< > : " / \ | ? *` remplacés par `_`) — téléchargement initial dans le dossier temporaire sous un nom basé sur l'id vidéo (évite les soucis d'unicode/collision côté yt-dlp), puis renommage vers `<titre assaini>.mp4` lors du déplacement final.
+  - **Le fichier vidéo et le fichier `.srt` partagent le même nom de base** (seule l'extension — et le suffixe de langue pour le `.srt` — diffère) : le nom de base utilisé pour les sous-titres est dérivé du nom réel du fichier vidéo téléchargé (déjà assaini), pas du titre brut, afin de garantir la cohérence même en cas de titre contenant des caractères interdits.
   - Téléchargement dans un dossier temporaire d'abord (pour ne pas polluer le dossier de sortie avec les fichiers annexes de yt-dlp comme `.info.json`), puis déplacement final.
   - Gestion du **runtime JavaScript requis par YouTube** pour résoudre les défis d'extraction (voir §4).
   - Gestion des **composants distants de contournement** (`remote_components`, ex. `ejs:github`).
@@ -190,7 +207,8 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
 - **Sélection manuelle** par numéro (1-based), avec plages (`"2,5-6"`).
 - **Sélection automatique** par motifs regex insensibles à la casse (`processing.chapter_autoselect_patterns` dans la config), ex. chapitres commençant par `MC`, ou nommés `Intro`/`Outro`.
 - **Combinaison** : manuel + automatique = union des deux sélections.
-- **Mode test** (`--listchapters`) : liste les chapitres et indique lesquels seraient sélectionnés, sans rien extraire/transcrire/traduire — pour valider ses regex avant un run réel.
+- **Fusion des sous-titres** : lorsque plusieurs chapitres sont sélectionnés, chaque chapitre est transcrit/traduit séparément (dans l'ordre des chapitres), mais les sous-titres résultants sont **fusionnés en un seul fichier `.srt`** (nommé comme pour un run classique, `<basename>.<langue>.srt`, sans suffixe `_chN`), avec renumérotation continue des indices de cues. Aucun fichier `.srt` par chapitre n'est conservé sur disque.
+- **Mode test** (`--listchapters`) : liste les chapitres et indique lesquels seraient sélectionnés, sans rien extraire/transcrire/traduire — pour valider ses regex avant un run réel. Simule **toujours** l'auto-sélection par motifs, même sans `--autoselectchapters` (l'affichage seul n'a aucun effet destructif, donc pas besoin de le demander explicitement) ; une sélection manuelle `--chapters` fournie en parallèle reste prise en compte en union.
 - Si aucun chapitre ne correspond (ou le fichier n'a pas de chapitres) alors qu'une sélection a été demandée : demande interactive (`y` = traduire le fichier entier, sinon arrêt).
 
 ### 3.6 Transcription (Whisper)
@@ -277,21 +295,21 @@ Si yt-dlp logue `WARNING: [youtube] No supported JavaScript runtime could be fou
 
 Deux fournisseurs actifs, choisis via `translation.service` dans `config.yaml` :
 
-### 5.1 DeepL (recommandé par défaut)
+### 5.1 DeepL
 
 - `translation.service: "deepl"`
 - Plan : `translation.deepl.plan: "free"` (défaut) ou `"pro"`.
 - Clé API : `config.local.yaml` (recommandé), variable d'environnement `DEEPL_API_KEY`, ou `translation.api_keys.deepl`.
 - Traduction segment par segment, sans awareness contextuelle avancée (pas de prompt personnalisable — DeepL n'expose pas ce mécanisme).
-- Qualité généralement excellente et rapide pour la plupart des paires de langues ; **le choix par défaut recommandé**.
+- Qualité généralement excellente et rapide pour la plupart des paires de langues.
 
-### 5.2 OpenAI (LLM, avec prompts personnalisables)
+### 5.2 OpenAI (LLM, avec prompts personnalisables) — recommandé par défaut
 
 - `translation.service: "openai"`
 - Modèle configurable : `translation.openai.model` (ex. `"gpt-4o"`, `"gpt-4o-mini"`).
 - `translation.openai.batch_size` : nombre de segments envoyés par requête (regroupement pour limiter les appels et donner plus de contexte au modèle).
 - Clé API : `config.local.yaml` (recommandé), variable d'environnement `OPENAI_API_KEY`, ou `translation.api_keys.openai`.
-- Meilleur pour les lignes riches en contexte (jeux de mots, tonalité, argot, références culturelles), mais plus lent et plus coûteux que DeepL.
+- Meilleur pour les lignes riches en contexte (jeux de mots, tonalité, argot, références culturelles), plus lent et plus coûteux que DeepL mais choisi comme fournisseur par défaut pour sa meilleure qualité contextuelle.
 - Seul fournisseur exposant un système de **prompts personnalisables** (voir §5.3).
 
 ### 5.3 Système de prompts
@@ -453,7 +471,22 @@ cd C:\Dev\CascadeProjects\spo-translate-video
 .\install-protocol-handlers.ps1
 ```
 
-Puis créer 2 favoris dans le navigateur (voir §2.2) avec les bookmarklets fournis dans le README/ce document.
+Puis créer 2 favoris dans le navigateur avec le code JavaScript fourni en §2.2 :
+
+**Chrome / Edge :**
+1. Afficher la barre de favoris si elle est masquée (`Ctrl+Maj+B`).
+2. Clic droit sur la barre de favoris → "Ajouter une page..." (ou clic droit → "Ajouter un favori").
+3. Dans le champ *Nom*, mettre par exemple `SPO Download` (ou `SPO Translate`).
+4. Dans le champ *URL*, coller intégralement le code `javascript:(function(){...})();` correspondant (§2.2), en une seule ligne.
+5. Enregistrer. Répéter pour le second bookmarklet.
+
+**Firefox :**
+1. Afficher la barre personnelle (`Ctrl+Maj+B`).
+2. Clic droit sur la barre → "Nouveau signet...".
+3. *Nom* : `SPO Download` (ou `SPO Translate`). *URL/Emplacement* : coller le code `javascript:...`.
+4. Enregistrer. Répéter pour le second bookmarklet.
+
+**Test :** ouvrir une vidéo YouTube (`https://www.youtube.com/watch?v=...`), cliquer sur le bookmarklet `SPO Download`. Le navigateur demande de confirmer l'ouverture de l'application externe associée à `spodl:` → accepter. Une fenêtre de commande doit s'ouvrir et rester ouverte pendant le téléchargement (voir §9 en cas de fenêtre qui se referme aussitôt).
 
 Pour désinstaller :
 
@@ -520,8 +553,32 @@ Aucun module de doublage/TTS ni de réencodage vidéo n'est prévu dans cette ar
 
 ---
 
+## 10bis. Tests
+
+Framework : **pytest** (`requirements-dev.txt`, config dans `pytest.ini`).
+
+Organisation en deux catégories, séparées par dossier :
+
+| Dossier | Contenu | Exécution |
+|---|---|---|
+| `tests/unit/` | Fonctions pures, sans I/O (parsing de sélection de chapitres, détection de type de source, etc.) | Toujours exécutés (`pytest`) |
+| `tests/integration/` | Nécessitent des ressources réelles : vidéo locale, ffmpeg, réseau YouTube, API de traduction | Marqués `@pytest.mark.integration`, **exclus par défaut** (`addopts = -m "not integration"`), lancés explicitement via `pytest -m integration` |
+
+Ressources de test réelles (voir `tests/fixtures/README.md`) :
+- `tests/fixtures/videos/test.mkv` : courte vidéo locale avec chapitres embarqués (non versionnée, binaire, à déposer manuellement).
+- `tests/fixtures/videos/test_chapters.txt` : fichier de chapitrage source (format ffmetadata) ayant servi à générer `test.mkv` ; versionné, utilisé comme référence dynamique pour calculer le résultat attendu des tests de chapitres (`tests/conftest.py::expected_chapters`), sans dupliquer les valeurs en dur dans le code de test.
+- `tests/fixtures/videos/non_ascii_chapters.mkv` (+ `non_ascii_chapters_meta.txt`) : vidéo committée avec un titre de chapitre non représentable en cp1252, pour reproduire de façon reproductible et sans coût de régénération le bug d'encodage de `_ffprobe_chapters` (voir historique des décisions).
+- `tests/fixtures/test_urls.yaml` : URL(s) YouTube de test ; **versionné** (choix du projet, pour éviter d'avoir à en rechercher une à chaque nouvel environnement).
+
+Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()` explicite si la ressource n'est pas encore fournie, plutôt que d'échouer.
+
+**Règle sur les vidéos de test générées par l'agent** : lorsqu'un test a besoin d'une courte vidéo synthétique (ex. générée via `ffmpeg -f lavfi ...` pour reproduire un bug précis), cette vidéo doit être **générée une seule fois puis committée** dans `tests/fixtures/videos/` (avec son éventuel fichier source, ex. métadonnées ffmetadata, pour permettre de la régénérer si besoin) — jamais régénérée dynamiquement à chaque exécution du test (`tmp_path` + appel `ffmpeg`), afin d'éviter le coût d'exécution répété et de garder les tests rapides et déterministes.
+
+---
+
 ## 11. Historique des décisions
 
+- **[Cette version]** Changement du fournisseur de traduction par défaut : `translation.service` passe de `"deepl"` à `"openai"` dans `config.yaml`.
 - **[Cette version]** Suppression du code de doublage/TTS (jamais fonctionnel, non branché) du périmètre du projet.
 - **[Cette version]** Retrait des fournisseurs de traduction `google_translate` et `azure` du périmètre actif (non recommandés / non implémentés).
 - **[Cette version]** Introduction du champ `system_prompt_extended` comme mécanisme officiel de personnalisation par projet, avec nouveau `system_prompt` par défaut générique.
@@ -530,3 +587,14 @@ Aucun module de doublage/TTS ni de réencodage vidéo n'est prévu dans cette ar
 - **[Cette version]** Extraction de `system_prompt` / `system_prompt_extended` dans un fichier dédié `config.prompt.yaml`, distinct de `config.yaml`, car modifié beaucoup plus fréquemment que le reste de la configuration.
 - **[Cette version]** Changement du sélecteur de format YouTube par défaut : vraie meilleure qualité tous conteneurs (`bestvideo+bestaudio/best`) + remux `.mp4` si nécessaire, au lieu d'une sélection restreinte au MP4 qui pouvait dégrader la résolution téléchargée. Ajout d'un avertissement obligatoire si la qualité effectivement obtenue reste inférieure à la meilleure disponible.
 - **[Cette version]** Renforcement des exigences de diagnostic pour le bug connu du déclenchement navigateur (fenêtre qui se ferme sans exécuter) : `try`/`catch` global, log systématique, affichage de la commande exacte tentée pour permettre de la rejouer manuellement.
+- **[Cette version]** Mise en place de l'infrastructure de tests (pytest) : séparation `tests/unit/` (sans I/O, toujours exécutés) et `tests/integration/` (ressources réelles — vidéo locale avec chapitres, URL YouTube — exclus par défaut, lancés via `pytest -m integration`).
+- **[Cette version]** Implémentation des premiers tests : unitaires sur la sélection de chapitres (`_parse_chapter_selection`, `_autoselect_chapters`, `_resolve_chapter_selection`) et la détection de source (`detect_source_type`) ; intégration sur `_ffprobe_chapters`/sélection auto avec une vraie vidéo fixture (`test.mkv` + `test_chapters.txt` versionné comme référence dynamique) et sur le téléchargement YouTube réel. Choix de versionner `test_urls.yaml` (petit fichier texte) plutôt que de l'exclure du dépôt.
+- **[Cette version]** Correction de `VideoDownloader._build_js_runtime` (`video_downloader.py`) : l'option `js_runtimes` passée à yt-dlp doit être un dict `{runtime: {config}}` et non une liste — bug détecté par le nouveau test d'intégration `test_download_from_youtube_succeeds`.
+- **[Cette version]** Correction d'un bug d'encodage dans `_ffprobe_chapters` (main.py) : `subprocess.run(..., text=True)` sans `encoding="utf-8"` explicite décodait la sortie JSON d'ffprobe avec l'encodage de la locale Windows (ex. cp1252), provoquant un `UnicodeDecodeError` silencieux et une perte de chapitres dès qu'un titre contenait un caractère non représentable dans cette locale (ex. japonais). Fix : `encoding="utf-8"` explicite passé à `subprocess.run`. Détecté et vérifié par `tests/integration/test_chapter_encoding_bug.py` (vidéo fixture committée `non_ascii_chapters.mkv`).
+- **[Cette version]** Correction : le fichier vidéo YouTube était nommé d'après l'id de la vidéo (`%(id)s.%(ext)s`) au lieu du titre, contrairement à la spec §3.3, et le `.srt` était nommé d'après le titre brut (non assaini), ce qui pouvait produire des noms de vidéo et de sous-titres différents, voire un échec d'écriture du `.srt` si le titre contenait des caractères interdits sous Windows. Fix : le fichier vidéo est désormais renommé d'après le titre assaini (`VideoDownloader._sanitize_filename`) lors du déplacement final, et `main.py` dérive systématiquement le nom de base des sous-titres du nom réel du fichier vidéo téléchargé (`Path(video_path).stem`), garantissant qu'ils partagent toujours le même nom de base. Ajout de tests unitaires (`tests/unit/test_video_downloader.py`).
+- **[Cette version]** Ajout du code JavaScript effectif des deux bookmarklets (`spodl:`/`spotr:`) en §2.2, ainsi que de la procédure pas-à-pas d'ajout aux favoris (Chrome/Edge/Firefox) en §7.3 — auparavant seulement décrits sans être fournis.
+- **[Cette version]** Même correctif (`encoding="utf-8"` explicite) appliqué par cohérence aux autres appels `subprocess.run(..., text=True)` manipulant des flux ffmpeg pouvant contenir des caractères non-ASCII (chemins/titres) : extraction audio (`audio_processor.py`), remux mp4 et téléchargement m3u8 (`video_downloader.py`). Bug confirmé en conditions réelles (titre de vidéo avec caractères japonais) sur l'extraction audio, même symptôme que celui déjà corrigé pour `_ffprobe_chapters`.
+- **[Cette version]** Ajout de `test_extract_audio_handles_non_cp1252_chapter_title` (`tests/integration/test_chapter_encoding_bug.py`), couvrant le cas réel `AudioProcessor.extract_audio` avec titres de chapitres non-ASCII. Ajout d'une piste audio silencieuse à la fixture `non_ascii_chapters.mkv` pour permettre ce test (chapitres inchangés).
+- **[Cette version]** Formalisation de la règle : toute vidéo de test synthétique générée par l'agent (ffmpeg) doit être committée dans `tests/fixtures/videos/`, jamais régénérée à chaque exécution (`tmp_path` + appel ffmpeg à chaque run), pour éviter le coût de génération répété.
+- **[Cette version]** `--listchapters` prévisualise désormais **toujours** l'auto-sélection par motifs (`chapter_autoselect_patterns`), même sans `--autoselectchapters` : usage attendu de `--listchapters` étant justement de vérifier rapidement ses regex sur une vidéo donnée, exiger `--asc` en plus était une friction inutile. Nouvelle fonction `_listchapters_selection_preview` (main.py), couverte par `tests/unit/test_chapter_selection.py`.
+- **[Cette version]** Lorsque plusieurs chapitres sont sélectionnés (`--chapters`/`--autoselectchapters`), les sous-titres de chaque chapitre sont désormais **fusionnés en un unique fichier `.srt`** au lieu de produire un fichier séparé par chapitre (`_chN`). Extraction de la logique de transcription/traduction dans `_translate_range` (retourne des `SubtitleCue` sans écrire de fichier), réutilisée par `_translate_and_write` (cas mono-fichier) et par la boucle de sélection de chapitres dans `main()` (concatène puis renumérote les cues avant un unique `write_srt`).

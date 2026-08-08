@@ -7,3 +7,9 @@ video_translation.log
 config.local.yaml
 protocol-handler.log
 .devin/mcp_config.local.json
+tests/fixtures/videos/*
+!tests/fixtures/videos/.gitkeep
+!tests/fixtures/videos/test_chapters.txt
+!tests/fixtures/videos/non_ascii_chapters.mkv
+!tests/fixtures/videos/non_ascii_chapters_meta.txt
+.pytest_cache/
