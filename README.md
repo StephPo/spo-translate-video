@@ -33,7 +33,7 @@ copy config.prompt.example.yaml config.prompt.yaml
 # Override languages
 .\spo-translate-video.bat "C:\path\to\video.mp4" --source-lang en --target-lang fr
 
-# Resume a failed run (skips re-running Whisper)
+# Resume a failed run (skips whichever phases already succeeded: download, Whisper transcription, translation)
 .\spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --resume
 ```
 

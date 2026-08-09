@@ -195,6 +195,13 @@ def _cleanup_run_temp_dir(run_temp_dir: Path, logger: logging.Logger) -> None:
 # Cache (resume support)
 # --------------------------------------------------------------------------
 
+def _download_cache_path(base_temp_dir: Path, source: str) -> Path:
+    import hashlib
+
+    digest = hashlib.sha1(source.encode("utf-8")).hexdigest()[:16]
+    return base_temp_dir / f"download_cache_{digest}.json"
+
+
 def _cache_file_path(subtitles_dir: Path, base: str, target_lang: str) -> Path:
     safe_base = (base or "subtitles").strip() or "subtitles"
     safe_lang = (target_lang or "").strip().lower() or "target"
@@ -308,7 +315,10 @@ def _listchapters_selection_preview(chapters: List[Dict[str, Any]], manual_spec:
 # Pipeline
 # --------------------------------------------------------------------------
 
-def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) -> Tuple[str, str, Optional[str], Optional[str]]:
+def _prepare_input(
+    source: str, config: Dict[str, Any], logger: logging.Logger,
+    *, resume: bool = False, download_cache_path: Optional[Path] = None,
+) -> Tuple[str, str, Optional[str], Optional[str]]:
     """Return (video_path, title_for_output, quality_info, quality_warning)."""
     source_type = detect_source_type(source)
     logger.info(f"Detected source type: {source_type}")
@@ -316,6 +326,13 @@ def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) 
     if source_type == "local":
         p = Path(source)
         return str(p), p.stem, None, None
+
+    if resume and download_cache_path is not None:
+        cached = _load_cache(download_cache_path)
+        cached_path = cached.get("video_path") if cached else None
+        if cached_path and Path(cached_path).exists():
+            logger.info(f"Resuming: reusing previously downloaded video (skipping download): {cached_path}")
+            return cached_path, cached.get("title") or Path(cached_path).stem, None, None
 
     downloader = VideoDownloader(config)
     if source_type == "youtube":
@@ -327,6 +344,8 @@ def _prepare_input(source: str, config: Dict[str, Any], logger: logging.Logger) 
         raise RuntimeError(f"Download failed: {result.error}")
 
     title = result.title or Path(result.video_path).stem
+    if download_cache_path is not None:
+        _save_cache(download_cache_path, {"video_path": result.video_path, "title": title})
     return result.video_path, title, result.quality_info, result.quality_warning
 
 
@@ -345,12 +364,16 @@ def _translate_range(
     cache_path = _cache_file_path(subtitles_dir, output_basename, target_lang)
     cache = _load_cache(cache_path) if resume else None
 
-    if cache and cache.get("segments"):
-        logger.info(f"Resuming from cache: {cache_path} ({len(cache['segments'])} segments already translated)")
+    if cache is not None and cache.get("originals") is not None:
+        logger.info(
+            f"Resuming from cache: {cache_path} "
+            f"({len(cache.get('segments') or [])} segments already translated, "
+            "skipping audio extraction + transcription)"
+        )
         starts = cache["starts"]
         ends = cache["ends"]
         originals = cache["originals"]
-        translated = cache["segments"]
+        translated = cache.get("segments") or []
         start_index = len(translated)
     else:
         start_time, end_time = time_range if time_range else (None, None)
@@ -434,7 +457,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chapters", "--c", default=None, help="1-based chapter selection for local files, e.g. 1,3-5")
     parser.add_argument("--autoselectchapters", "--asc", action="store_true", help="Auto-select chapters by regex patterns in config")
     parser.add_argument("--listchapters", "--lc", action="store_true", help="List chapters and matching status, without translating")
-    parser.add_argument("--resume", action="store_true", help="Resume a previous run from the last translated segment")
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Resume a previous failed run: skip re-downloading if already downloaded, skip "
+        "re-transcribing if a transcription was already cached, and continue translation from "
+        "the last translated segment",
+    )
     return parser
 
 
@@ -456,9 +484,13 @@ def main() -> int:
         print(f"  download_only={args.download_only}")
         return 0
 
+    base_temp_dir = Path(config.get("video", {}).get("temp_directory", "./temp"))
     run_temp_dir = _create_run_temp_dir(config, logger)
     try:
         source_type = detect_source_type(args.input)
+        download_cache_path = (
+            _download_cache_path(base_temp_dir, args.input) if source_type != "local" else None
+        )
 
         # --listchapters: inspect without extracting/transcribing/translating.
         if args.listchapters:
@@ -478,7 +510,9 @@ def main() -> int:
                 print(f"{mark} {idx + 1}. {title} ({ch.get('start_time')} - {ch.get('end_time')})")
             return 0
 
-        video_path, title, quality_info, quality_warning = _prepare_input(args.input, config, logger)
+        video_path, title, quality_info, quality_warning = _prepare_input(
+            args.input, config, logger, resume=args.resume, download_cache_path=download_cache_path,
+        )
         if quality_info:
             print(_green(quality_info))
         if quality_warning:
@@ -491,6 +525,8 @@ def main() -> int:
 
         if args.download_only:
             logger.info(_green(f"Download complete: {video_path}"))
+            if download_cache_path is not None:
+                download_cache_path.unlink(missing_ok=True)
             return 0
 
         output_cfg = config.get("output", {})
@@ -538,12 +574,16 @@ def main() -> int:
                 output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
                 write_srt(all_cues, output_path)
                 logger.info(_green(f"Subtitles written: {output_path}"))
+                if download_cache_path is not None:
+                    download_cache_path.unlink(missing_ok=True)
                 return 0
 
         _translate_and_write(
             config=config, logger=logger, video_path=video_path, output_basename=output_basename,
             subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang, resume=args.resume,
         )
+        if download_cache_path is not None:
+            download_cache_path.unlink(missing_ok=True)
         return 0
     finally:
         _cleanup_run_temp_dir(run_temp_dir, logger)
