@@ -69,12 +69,15 @@ def _framed(lines: list) -> str:
 
 
 YOUTUBE_URL_RE = re.compile(r"(youtube\.com/(watch\?|shorts/)|youtu\.be/)", re.IGNORECASE)
+TWITTER_URL_RE = re.compile(r"(?:twitter\.com|x\.com)/[^/]+/status/\d+", re.IGNORECASE)
 
 
 def detect_source_type(source: str) -> str:
-    """Auto-detect the source type: 'youtube', 'm3u8', or 'local'."""
+    """Auto-detect the source type: 'youtube', 'twitter', 'm3u8', or 'local'."""
     if YOUTUBE_URL_RE.search(source):
         return "youtube"
+    if TWITTER_URL_RE.search(source):
+        return "twitter"
     if source.lower().split("?")[0].endswith(".m3u8"):
         return "m3u8"
     if Path(source).exists():
@@ -180,7 +183,7 @@ class VideoDownloader:
             entry["path"] = path
         return {name: entry}
 
-    def _base_ydl_opts(self, logger: _YtDlpLogger) -> Dict[str, Any]:
+    def _base_ydl_opts(self, logger: _YtDlpLogger, playlist_index: Optional[int] = None) -> Dict[str, Any]:
         opts: Dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
@@ -188,6 +191,13 @@ class VideoDownloader:
             "logger": logger,
             "cachedir": str(self.cache_dir),
         }
+        if playlist_index is not None:
+            # Some sources expose several videos under the exact same webpage_url (e.g. a single
+            # tweet with multiple native video attachments, see SPECIFICATIONS.md section 3.1.1):
+            # the only way to pick a specific one back up is by 1-based entry position within the
+            # pseudo-playlist yt-dlp builds for that URL, not by URL alone.
+            opts["noplaylist"] = False
+            opts["playlist_items"] = str(playlist_index)
         if self.js_runtimes:
             opts["js_runtimes"] = self.js_runtimes
         if self.remote_components:
@@ -255,7 +265,61 @@ class VideoDownloader:
             "('pip install -U yt-dlp') as fixes for specific clients are shipped frequently."
         )
 
-    def preflight_best_height(self, url: str) -> Optional[int]:
+    def list_twitter_videos(self, url: str) -> list:
+        """List the video(s) yt-dlp finds for a tweet URL, without downloading.
+
+        A tweet can expose more than one downloadable video (e.g. multiple native video
+        attachments on the same tweet, and/or a quoted/cited tweet's video); in that case yt-dlp
+        represents the URL as a playlist with one entry per video. Note that all entries can share
+        the exact same `webpage_url` (the tweet's own URL) when they come from multiple native
+        attachments on one tweet, so the URL alone cannot be used later to re-select a specific
+        entry — each returned dict also carries its 1-based `playlist_index` within that
+        pseudo-playlist for that purpose (see `download_from_youtube`'s `playlist_index` param).
+        Returns a list of dicts with 'url', 'title', 'uploader', 'playlist_index' (one entry, with
+        `playlist_index=None`, if only a single video is found).
+        """
+        logger = _YtDlpLogger(self.logger)
+        opts = self._base_ydl_opts(logger)
+        opts.update({"noplaylist": False, "skip_download": True})
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as e:
+            self.logger.warning(f"Could not list videos for tweet {url}: {e}")
+            return [{"url": url, "title": None, "uploader": None, "playlist_index": None}]
+
+        entries = (info or {}).get("entries")
+        if entries:
+            videos = [
+                {
+                    "url": e.get("webpage_url") or e.get("url"),
+                    "title": e.get("title") or e.get("id"),
+                    "uploader": e.get("uploader"),
+                    "playlist_index": idx,
+                }
+                for idx, e in enumerate(entries, 1) if e
+            ]
+            if videos:
+                return videos
+        return [{
+            "url": (info or {}).get("webpage_url") or url,
+            "title": (info or {}).get("title"),
+            "uploader": (info or {}).get("uploader"),
+            "playlist_index": None,
+        }]
+
+    @staticmethod
+    def _unwrap_single_entry(info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """If `info` is a (single-entry, thanks to `playlist_items`) playlist wrapper, return that
+        entry's own info dict instead — needed to get accurate `formats`/`requested_downloads`/
+        `ext` (observed unresolved as "NA" on the wrapper for some extractors, e.g. X/Twitter)."""
+        if isinstance(info, dict) and info.get("entries"):
+            entries = list(info["entries"])
+            if len(entries) == 1 and isinstance(entries[0], dict):
+                return entries[0]
+        return info
+
+    def preflight_best_height(self, url: str, playlist_index: Optional[int] = None) -> Optional[int]:
         """Return the best available video height for `url` (any container), without downloading.
 
         Deliberately does NOT pass a `format` selector: format metadata (height, vcodec, ...) is
@@ -268,11 +332,12 @@ class VideoDownloader:
         try:
             self.logger.info(f"Preflight quality check: {url}")
             logger = _YtDlpLogger(self.logger)
-            opts = self._base_ydl_opts(logger)
+            opts = self._base_ydl_opts(logger, playlist_index=playlist_index)
             opts.update({"skip_download": True})
             self.logger.info(f"Equivalent command: {self._describe_cli(url, opts, download=False)}")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
+            info = self._unwrap_single_entry(info)
             if logger.js_runtime_warning:
                 self._maybe_warn_missing_js_runtime()
             if logger.js_challenge_warning:
@@ -311,16 +376,18 @@ class VideoDownloader:
         except Exception:
             return None
 
-    def _attempt_youtube_download(self, url: str, attempt_suffix: str = ""):
+    def _attempt_youtube_download(self, url: str, attempt_suffix: str = "", playlist_index: Optional[int] = None):
         """Run one preflight + actual download pass using the currently configured `self.player_clients`.
 
         `attempt_suffix` is baked into the temp filename so a retry attempt (see
         `download_from_youtube`) never overwrites a still-needed previous attempt on disk.
+        `playlist_index` selects a specific entry when `url` exposes several videos under the
+        same webpage_url (see `list_twitter_videos`/SPECIFICATIONS.md section 3.1.1).
         """
-        best_height = self.preflight_best_height(url)
+        best_height = self.preflight_best_height(url, playlist_index=playlist_index)
 
         logger = _YtDlpLogger(self.logger)
-        opts = self._base_ydl_opts(logger)
+        opts = self._base_ydl_opts(logger, playlist_index=playlist_index)
         opts.update({
             "format": "bestvideo+bestaudio/best",
             "outtmpl": str(self.temp_dir / f"%(id)s{attempt_suffix}.%(ext)s"),
@@ -331,6 +398,7 @@ class VideoDownloader:
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            info = self._unwrap_single_entry(info)
             downloaded_path = Path(ydl.prepare_filename(info))
             # merge_output_format may change the extension after postprocessing.
             if info.get("requested_downloads"):
@@ -338,14 +406,34 @@ class VideoDownloader:
                 if fp:
                     downloaded_path = Path(fp)
 
+        if not downloaded_path.exists():
+            # Some extractors (observed with X/Twitter) leave `ext` unresolved ("NA") on the
+            # format info, so the path reported/derived above doesn't match the file actually
+            # written to disk. Fall back to locating it by id in the temp dir.
+            video_id = info.get("id")
+            if video_id:
+                candidates = [
+                    p for p in self.temp_dir.glob(f"{video_id}{attempt_suffix}.*")
+                    if p.suffix not in (".part", ".ytdl") and p.is_file()
+                ]
+                if candidates:
+                    downloaded_path = max(candidates, key=lambda p: p.stat().st_mtime)
+
         return best_height, info, downloaded_path, logger
 
-    def download_from_youtube(self, url: str) -> DownloadResult:
+    def download_from_youtube(self, url: str, playlist_index: Optional[int] = None) -> DownloadResult:
         """Download the best available quality (any container), remuxing to mp4 if needed.
 
         See SPECIFICATIONS.md section 3.3: the format selector intentionally targets the true
         best quality across all containers (not just mp4), to avoid silently downloading a lower
         resolution than what is actually available (e.g. high-res streams only offered in WebM/VP9).
+
+        Despite the name, this is a generic yt-dlp download and is also reused for the video
+        chosen from a tweet URL (see SPECIFICATIONS.md section 3.1.1): none of the logic here is
+        YouTube-specific beyond the `youtube_player_clients` extractor arg, which yt-dlp simply
+        ignores for other extractors. `playlist_index` (1-based) selects a specific video when
+        `url` exposes several under the same webpage_url (e.g. multiple native video attachments
+        on one tweet) — see `list_twitter_videos`.
         """
         try:
             self.logger.info(f"Downloading YouTube video: {url}")
@@ -377,7 +465,7 @@ class VideoDownloader:
                     attempt_suffix = "" if idx == 0 else f".attempt{idx}"
                     try:
                         best_height, info, downloaded_path, logger = self._attempt_youtube_download(
-                            url, attempt_suffix=attempt_suffix
+                            url, attempt_suffix=attempt_suffix, playlist_index=playlist_index
                         )
                         actual_height = self._selected_height(info)
                         attempts.append({

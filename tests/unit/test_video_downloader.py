@@ -22,6 +22,14 @@ def test_detect_source_type_m3u8():
     assert detect_source_type("https://example.com/stream/playlist.m3u8") == "m3u8"
 
 
+def test_detect_source_type_twitter_status_x_domain():
+    assert detect_source_type("https://x.com/someuser/status/1234567890123456789") == "twitter"
+
+
+def test_detect_source_type_twitter_status_twitter_domain():
+    assert detect_source_type("https://twitter.com/someuser/status/1234567890123456789") == "twitter"
+
+
 def test_detect_source_type_local_file():
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
         tmp_path = Path(f.name)
@@ -96,7 +104,7 @@ class _FakeYoutubeDL:
 def test_download_from_youtube_uses_sanitized_title_as_filename(tmp_path, monkeypatch):
     """The downloaded video must be named after the sanitized YouTube title, not the video id."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: None)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: None)
 
     raw_title = 'My Video: Part 1 / "Intro"?'
     info = {"id": "dQw4w9WgXcQ", "ext": "mp4", "title": raw_title}
@@ -121,7 +129,7 @@ def test_download_from_youtube_uses_sanitized_title_as_filename(tmp_path, monkey
 def test_download_from_youtube_output_basename_matches_video_and_would_produce_matching_srt(tmp_path, monkeypatch):
     """Video and subtitle files must share the same basename (except extension)."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: None)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: None)
 
     raw_title = "Some: Title?"
     info = {"id": "abc123", "ext": "mp4", "title": raw_title}
@@ -162,7 +170,7 @@ def test_max_available_height_none_info():
 def test_download_from_youtube_reports_quality_info_when_matching(tmp_path, monkeypatch):
     """Quality info must always be reported, even when the download matches the best available quality."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     raw_title = "Great Video"
     info = {"id": "abc123", "ext": "mp4", "title": raw_title, "height": 1080}
@@ -187,7 +195,7 @@ def test_download_from_youtube_warns_when_quality_below_best_available(tmp_path,
     """A framed, hard-to-miss warning must be produced when the downloaded quality is lower than
     the best quality detected as available (the exact scenario reported by the user)."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     raw_title = "Great Video"
     info = {"id": "abc123", "ext": "mp4", "title": raw_title, "height": 360}
@@ -215,7 +223,7 @@ def test_download_from_youtube_warns_when_quality_below_best_available(tmp_path,
 def test_download_from_youtube_logs_and_reports_the_url(tmp_path, monkeypatch, caplog):
     """The URL being downloaded must always appear in the logs and in the quality info message."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     raw_title = "Great Video"
     info = {"id": "abc123", "ext": "mp4", "title": raw_title, "height": 1080}
@@ -242,7 +250,7 @@ def test_download_from_youtube_warns_on_sabr_even_when_heights_match(tmp_path, m
     since the detected best may itself be artificially low (the scenario the user hit in practice:
     android_vr formats skipped, best available and downloaded both computed as 360p)."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 360)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 360)
 
     raw_title = "Great Video"
     info = {"id": "abc123", "ext": "mp4", "title": raw_title, "height": 360}
@@ -283,7 +291,7 @@ def test_download_from_youtube_retries_and_uses_better_quality_on_sabr(tmp_path,
 
     call_count = {"n": 0}
 
-    def fake_preflight(url):
+    def fake_preflight(url, playlist_index=None):
         call_count["n"] += 1
         # First attempt (configured clients) sees only 360p; retry (fallback clients) sees 1080p.
         return 360 if call_count["n"] == 1 else 1080
@@ -312,7 +320,7 @@ def test_download_from_youtube_retries_after_hard_failure_on_first_attempt(tmp_p
     incompatible cached challenge-solver script) must still trigger the fallback-clients retry,
     not abort the whole download immediately."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     raw_title = "Great Video"
 
@@ -338,7 +346,7 @@ def test_download_from_youtube_fails_when_all_attempts_fail(tmp_path, monkeypatc
     """If every candidate player-client list fails, the download must fail with a clear error
     instead of raising an unrelated exception (e.g. attribute error on an empty attempts list)."""
     downloader = _make_downloader(tmp_path)
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     import video_downloader as vd_module
 
@@ -429,7 +437,7 @@ def test_download_from_youtube_makes_up_to_max_attempts_when_still_degraded(tmp_
     each attempt is an independent roll of the dice against YouTube's per-session SABR rollout."""
     downloader = _make_downloader(tmp_path)
     downloader.quality_max_attempts = 4
-    monkeypatch.setattr(downloader, "preflight_best_height", lambda url: 1080)
+    monkeypatch.setattr(downloader, "preflight_best_height", lambda url, playlist_index=None: 1080)
 
     call_count = {"n": 0}
 

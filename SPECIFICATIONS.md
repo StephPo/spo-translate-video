@@ -150,10 +150,21 @@ Ce bug est actuellement **connu mais non résolu** : la cause exacte (erreur sil
 | Source | Détection | Outil |
 |---|---|---|
 | URL YouTube (vidéo, short, `youtu.be`) | Auto (regex) | yt-dlp |
+| URL tweet X/Twitter (`x.com` ou `twitter.com`, `/status/<id>`) | Auto (regex) | yt-dlp |
 | URL `.m3u8` (flux HLS) | Auto (regex) | ffmpeg (remux direct) |
 | Fichier vidéo local (`mp4`, `avi`, `mov`, `mkv`, `webm`) | Auto (chemin existant sur disque) | — |
 
 > La détection du type de source est **toujours automatique** ; il n'existe pas d'option pour la forcer manuellement (retiré volontairement : la détection auto est jugée fiable à 100 % dans l'usage réel du projet).
+
+#### 3.1.1 URL de tweet X/Twitter avec plusieurs vidéos
+
+Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieurs pièces jointes vidéo natives sur le même tweet, soit la vidéo du tweet lui-même **et** celle d'un tweet cité/quoté. Comportement à l'entrée d'une URL de tweet :
+
+- Le programme interroge d'abord yt-dlp (sans télécharger, `noplaylist=False`) pour lister les vidéos trouvées pour cette URL ; yt-dlp les représente comme les entrées d'une pseudo-playlist.
+- **Une seule vidéo trouvée** : téléchargement automatique, sans interaction supplémentaire (comportement identique à YouTube/m3u8).
+- **Plusieurs vidéos trouvées** : le programme affiche la liste des vidéos (auteur du tweet associé, titre/description si disponible) numérotée, puis **demande interactivement** à l'utilisateur de choisir laquelle télécharger (saisie du numéro). Seule la vidéo choisie est téléchargée et traitée (téléchargement seul, ou pipeline complet transcription/traduction selon `--download-only`) ; ce n'est pas un traitement en masse de toutes les vidéos du tweet.
+  - **Important** : plusieurs pièces jointes natives sur un même tweet partagent exactement la même `webpage_url` (celle du tweet) — l'URL seule ne suffit donc pas à re-sélectionner la vidéo choisie. Le programme mémorise et réutilise la **position (1-based) de l'entrée dans la pseudo-playlist** (`playlist_index`, option yt-dlp `playlist_items`) pour le téléchargement effectif.
+- Le téléchargement de la vidéo choisie réutilise la même mécanique que le téléchargement YouTube (yt-dlp, meilleure qualité tous conteneurs, remux `.mp4` si nécessaire — voir §3.3), yt-dlp gérant nativement l'extraction X/Twitter (manifest HLS maître avec pistes vidéo/audio séparées).
 
 ### 3.2 Options de la ligne de commande
 
@@ -268,6 +279,11 @@ Voir §5 pour le détail des fournisseurs. Points communs :
 - Sortie colorée dans le terminal (vert/jaune/rouge) quand le terminal le supporte (détection ANSI, y compris activation du mode VT100 sous Windows).
 - Affichage de progression (désactivable via `--no-progress`).
 - Bloc d'erreur visuellement distinct en cas d'échec fatal (bordures, message clair) pour rester lisible même dans une fenêtre qui va rester ouverte.
+- **Copie des logs dans un fichier**, en plus de l'affichage console habituel (inchangé) : contrôlé par `processing.log_to_file` (`true` par défaut) et `processing.log_file_path` (défaut `./temp/logs/last_run.log`).
+  - Le fichier est **écrasé au début de chaque run** (pas d'accumulation entre runs) — il ne contient donc toujours que les logs du run le plus récent, jusqu'au démarrage du run suivant.
+  - Le chemin du fichier de log est loggué dès l'initialisation (juste avant la commande d'invocation), pour le retrouver facilement.
+  - Les **exceptions non interceptées** (traceback Python en fin de run, ex. `RuntimeError: Download failed: ...`) sont également écrites dans ce fichier (`sys.excepthook`), en plus de leur affichage console habituel (inchangé, sur stderr) — utile pour transmettre le fichier de log complet en cas de bug plutôt que copier-coller la console.
+  - **Codes couleur ANSI filtrés dans le fichier** : la sortie console reste colorée normalement (vert/jaune/rouge, inchangé), mais le fichier de log (destiné à être relu/collé tel quel) ne contient jamais les séquences d'échappement ANSI brutes (`main._StripAnsiFormatter`, appliqué uniquement au handler fichier).
 
 ---
 
@@ -438,7 +454,7 @@ Structure (sections principales) :
 - `audio` — format d'extraction, sample rate, canaux, normalisation.
 - `speech_recognition` — moteur (`whisper`), modèle, seuil de confiance, longueur max de segment.
 - `video` — chemin ffmpeg, encodage (non utilisé pour la génération de sous-titres seule, conservé pour référence), dossier temporaire, `youtube_js_runtime`, `youtube_remote_components`, `youtube_player_clients` (voir §4.2).
-- `processing` — parallélisme, niveau de log, patterns d'auto-sélection de chapitres, nettoyage des fichiers temporaires.
+- `processing` — parallélisme, niveau de log, copie des logs dans un fichier (`log_to_file`/`log_file_path`, voir §3.11), patterns d'auto-sélection de chapitres, nettoyage des fichiers temporaires.
 - `advanced` — GPU, timeouts, retries génériques.
 - `quality_control` — validations optionnelles (longueur min/max de texte, durée min audio...).
 
@@ -635,5 +651,10 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Même correctif (`encoding="utf-8"` explicite) appliqué par cohérence aux autres appels `subprocess.run(..., text=True)` manipulant des flux ffmpeg pouvant contenir des caractères non-ASCII (chemins/titres) : extraction audio (`audio_processor.py`), remux mp4 et téléchargement m3u8 (`video_downloader.py`). Bug confirmé en conditions réelles (titre de vidéo avec caractères japonais) sur l'extraction audio, même symptôme que celui déjà corrigé pour `_ffprobe_chapters`.
 - **[Cette version]** Ajout de `test_extract_audio_handles_non_cp1252_chapter_title` (`tests/integration/test_chapter_encoding_bug.py`), couvrant le cas réel `AudioProcessor.extract_audio` avec titres de chapitres non-ASCII. Ajout d'une piste audio silencieuse à la fixture `non_ascii_chapters.mkv` pour permettre ce test (chapitres inchangés).
 - **[Cette version]** Formalisation de la règle : toute vidéo de test synthétique générée par l'agent (ffmpeg) doit être committée dans `tests/fixtures/videos/`, jamais régénérée à chaque exécution (`tmp_path` + appel ffmpeg à chaque run), pour éviter le coût de génération répété.
+- **[Cette version]** Correction d'un échec de téléchargement observé avec X/Twitter (`VideoDownloader._attempt_youtube_download`) : pour certains formats (notamment X/Twitter), yt-dlp laisse `ext` non résolu (`"NA"`) dans les métadonnées de format, ce qui produit un chemin de fichier incorrect (ex. `<id>.NA`) alors que le fichier réellement fusionné par `ffmpeg`/yt-dlp existe sous une autre extension (ex. `.mp4`) — provoquant un échec du remux (`No such file or directory`) alors que le téléchargement avait en réalité réussi. Fix : si le chemin dérivé n'existe pas sur disque, recherche du fichier réellement téléchargé dans le dossier temporaire par préfixe d'id vidéo.
+- **[Cette version]** Correction de la racine du bug ci-dessus pour le cas réel qui le déclenchait : un tweet avec **plusieurs pièces jointes vidéo natives** (pas seulement le cas "tweet cité") expose des entrées yt-dlp partageant toutes la même `webpage_url`, donc retélécharger via cette seule URL après sélection ré-ambiguïsait la vidéo et cassait la résolution de `ext`/`formats` (§3.1.1). Fix : `VideoDownloader.list_twitter_videos` renvoie désormais aussi la position (1-based) de chaque entrée dans la pseudo-playlist yt-dlp (`playlist_index`), et `download_from_youtube`/`_attempt_youtube_download`/`preflight_best_height` acceptent ce `playlist_index` pour cibler précisément l'entrée choisie via l'option yt-dlp `playlist_items`, en dépaquetant l'entrée unique résultante (`VideoDownloader._unwrap_single_entry`) pour retrouver des métadonnées de format correctes.
+- **[Cette version]** Filtrage des codes couleur ANSI dans le fichier de log (`main._StripAnsiFormatter`), pour qu'il reste lisible tel quel une fois collé/partagé, sans toucher à l'affichage console coloré habituel.
+- **[Cette version]** Ajout de la copie des logs dans un fichier (`processing.log_to_file`/`processing.log_file_path`, §3.11), en plus de l'affichage console inchangé : fichier écrasé au début de chaque run (pas d'accumulation), et capture des exceptions non interceptées via `sys.excepthook` en plus de leur affichage console habituel.
+- **[Cette version]** Ajout de la détection automatique des URL de tweet X/Twitter (`/status/<id>`) comme nouvelle source d'entrée (§3.1/§3.1.1) : téléchargement direct si une seule vidéo est trouvée par yt-dlp pour ce tweet, sinon affichage d'une liste numérotée (vidéo du tweet + vidéo(s) de tweet(s) cité(s)) et sélection interactive de la vidéo à traiter.
 - **[Cette version]** `--listchapters` prévisualise désormais **toujours** l'auto-sélection par motifs (`chapter_autoselect_patterns`), même sans `--autoselectchapters` : usage attendu de `--listchapters` étant justement de vérifier rapidement ses regex sur une vidéo donnée, exiger `--asc` en plus était une friction inutile. Nouvelle fonction `_listchapters_selection_preview` (main.py), couverte par `tests/unit/test_chapter_selection.py`.
 - **[Cette version]** Lorsque plusieurs chapitres sont sélectionnés (`--chapters`/`--autoselectchapters`), les sous-titres de chaque chapitre sont désormais **fusionnés en un unique fichier `.srt`** au lieu de produire un fichier séparé par chapitre (`_chN`). Extraction de la logique de transcription/traduction dans `_translate_range` (retourne des `SubtitleCue` sans écrire de fichier), réutilisée par `_translate_and_write` (cas mono-fichier) et par la boucle de sélection de chapitres dans `main()` (concatène puis renumérote les cues avant un unique `write_srt`).

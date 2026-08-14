@@ -123,14 +123,68 @@ def load_config(config_path: str, config_local_path: str, prompt_path: str = "co
     return cfg
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _StripAnsiFormatter(logging.Formatter):
+    """Formatter that strips ANSI color escape codes, for the log file handler: console output
+    stays colored as before, but the file (meant to be pasted/read as plain text) stays clean.
+    See SPECIFICATIONS.md section 3.11."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _ANSI_ESCAPE_RE.sub("", super().format(record))
+
+
+def _install_exception_file_logging(file_handler: Optional[logging.FileHandler], log_path: Path) -> None:
+    """Also write uncaught exceptions to `file_handler` (if any), on top of the console's
+
+    existing (unchanged) traceback output on stderr — see SPECIFICATIONS.md section 3.11.
+    """
+    if file_handler is None:
+        return
+    default_hook = sys.excepthook
+
+    def _hook(exc_type, exc_value, exc_tb):
+        try:
+            record = logging.LogRecord(
+                "spo_translate_video", logging.CRITICAL, __file__, 0,
+                "Unhandled exception", (), (exc_type, exc_value, exc_tb),
+            )
+            file_handler.emit(record)
+            file_handler.flush()
+        except Exception:
+            pass
+        default_hook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _hook
+
+
 def _setup_logging(config: Dict[str, Any]) -> logging.Logger:
-    log_level = config.get("processing", {}).get("log_level", "INFO")
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-    return logging.getLogger("spo_translate_video")
+    processing_cfg = config.get("processing", {}) or {}
+    log_level = processing_cfg.get("log_level", "INFO")
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+    handlers: List[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    file_handler = None
+    log_path: Optional[Path] = None
+    if processing_cfg.get("log_to_file", True):
+        log_path = Path(processing_cfg.get("log_file_path") or "./temp/logs/last_run.log")
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            # Overwritten (not appended) at the start of each run: only the most recent run's
+            # logs are kept, until the next run starts (see SPECIFICATIONS.md section 3.11).
+            file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+            handlers.append(file_handler)
+        except Exception:
+            file_handler = None
+
+    logging.basicConfig(level=getattr(logging, log_level, logging.INFO), format=log_format, handlers=handlers, force=True)
+    logger = logging.getLogger("spo_translate_video")
+    if file_handler is not None:
+        file_handler.setFormatter(_StripAnsiFormatter(log_format))
+        logger.info(f"Log file: {log_path}")
+        _install_exception_file_logging(file_handler, log_path)
+    return logger
 
 
 def _describe_invocation_command() -> str:
@@ -315,6 +369,42 @@ def _listchapters_selection_preview(chapters: List[Dict[str, Any]], manual_spec:
 # Pipeline
 # --------------------------------------------------------------------------
 
+def _resolve_twitter_video_url(downloader: VideoDownloader, source: str, logger: logging.Logger) -> Tuple[str, Optional[int]]:
+    """Return (url, playlist_index) of the video to download for a tweet source (see
+    SPECIFICATIONS.md section 3.1.1).
+
+    If yt-dlp finds a single video for the tweet, it is used directly. If it finds several (e.g.
+    multiple native video attachments on the same tweet, and/or a quoted tweet's video), the user
+    is prompted to pick one. `playlist_index` must be threaded back into the actual download call
+    (`VideoDownloader.download_from_youtube`) because entries can share the exact same
+    `webpage_url`, so the URL alone isn't always enough to re-select the chosen video.
+    """
+    videos = downloader.list_twitter_videos(source)
+    if len(videos) <= 1:
+        chosen = videos[0] if videos else {"url": source, "playlist_index": None}
+        return chosen["url"], chosen.get("playlist_index")
+
+    print("Plusieurs vidéos trouvées dans ce tweet :")
+    for i, v in enumerate(videos, 1):
+        title = v.get("title") or "(titre inconnu)"
+        uploader = v.get("uploader") or "?"
+        print(f"  {i}. {title} (auteur: {uploader})")
+
+    while True:
+        choice = input(f"Choisissez la vidéo à télécharger (1-{len(videos)}) : ").strip()
+        try:
+            idx = int(choice)
+            if 1 <= idx <= len(videos):
+                break
+        except ValueError:
+            pass
+        print(f"Entrée invalide, saisissez un nombre entre 1 et {len(videos)}.")
+
+    chosen = videos[idx - 1]
+    logger.info(f"Vidéo choisie parmi {len(videos)} : {chosen.get('title')} ({chosen['url']})")
+    return chosen["url"], chosen.get("playlist_index")
+
+
 def _prepare_input(
     source: str, config: Dict[str, Any], logger: logging.Logger,
     *, resume: bool = False, download_cache_path: Optional[Path] = None,
@@ -335,7 +425,10 @@ def _prepare_input(
             return cached_path, cached.get("title") or Path(cached_path).stem, None, None
 
     downloader = VideoDownloader(config)
-    if source_type == "youtube":
+    if source_type == "twitter":
+        target_url, playlist_index = _resolve_twitter_video_url(downloader, source, logger)
+        result = downloader.download_from_youtube(target_url, playlist_index=playlist_index)
+    elif source_type == "youtube":
         result = downloader.download_from_youtube(source)
     else:
         result = downloader.download_from_m3u8(source)

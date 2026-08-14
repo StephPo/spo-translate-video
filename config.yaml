@@ -75,6 +75,11 @@ video:
 processing:
   log_level: "INFO"
   show_progress: true
+  # Also write the full log of the current run to a file (in addition to the console), so it can
+  # be inspected/shared after the fact without having to copy-paste the terminal. The file is
+  # overwritten at the start of each run (kept only until the next run starts).
+  log_to_file: true
+  log_file_path: "./temp/logs/last_run.log"
   chapter_autoselect_patterns:
     - "^MC"
     - "^Intro$"
