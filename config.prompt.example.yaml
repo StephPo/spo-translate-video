@@ -2,9 +2,16 @@
 # See SPECIFICATIONS.md section 5.3 for the full rationale.
 #
 # system_prompt: general, stable subtitle-translation rules. Rarely edited.
-# system_prompt_extended: project-specific instructions (this streamer, this
-# series, this glossary...). Edited often — feel free to rewrite it entirely
-# for each new project.
+#
+# system_prompt_extended: the ACTIVE project-specific prompt. This exact key
+# is the only one read by translator.py and actually sent to the model.
+# Edit it directly for the project you're currently translating.
+#
+# saved_prompts: a personal library of past/other projects' extended prompts,
+# kept here for later reuse. NOT read by the code — just plain YAML text for
+# convenience. To reactivate one: copy its content into `system_prompt_extended`
+# above. Add a new entry here (with a descriptive key) whenever you want to
+# archive the current `system_prompt_extended` before overwriting it.
 
 system_prompt: >
   You are a professional subtitle translator specialized in {source_language_name} to
@@ -41,3 +48,10 @@ system_prompt: >
 #
 # Leave empty ("") if system_prompt alone is enough.
 system_prompt_extended: ""
+
+# --------------------------------------------------------------------------
+# Saved prompts (inactive — reference library only, see note at top of file)
+# --------------------------------------------------------------------------
+# saved_prompts:
+#   some_project_name: >
+#     Project-specific context to keep around for later reuse.

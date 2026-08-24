@@ -227,46 +227,64 @@ class OpenAITranslator(Translator):
         def _retry_after(e: Exception) -> Optional[float]:
             return None
 
+        def _request_batch(batch: List[str]) -> List[str]:
+            # Numbered list so the model can keep segments aligned 1:1 in its response.
+            numbered_input = "\n".join(f"{j + 1}. {text}" for j, text in enumerate(batch))
+            user_prompt = self.user_prompt_template.format_map(_SafeDict(**ctx, text=numbered_input))
+
+            def _do_request():
+                return client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                )
+
+            response = _retry_with_backoff(
+                logger=self.logger,
+                max_retries=max_retries,
+                initial_delay_seconds=initial_delay,
+                max_delay_seconds=max_delay,
+                backoff_multiplier=backoff_mult,
+                jitter_ratio=jitter_ratio,
+                is_retryable=_is_retryable,
+                get_retry_after_seconds=_retry_after,
+                op=_do_request,
+            )
+            content = response.choices[0].message.content or ""
+            lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
+            # Strip a leading "N." numbering if the model echoed it back.
+            cleaned = []
+            for ln in lines:
+                parts = ln.split(".", 1)
+                if len(parts) == 2 and parts[0].strip().isdigit():
+                    cleaned.append(parts[1].strip())
+                else:
+                    cleaned.append(ln)
+            return cleaned
+
         results: List[TranslationSegment] = []
         try:
             batches = [segments[i:i + self.batch_size] for i in range(0, len(segments), self.batch_size)]
             done = 0
             for batch in batches:
-                # Numbered list so the model can keep segments aligned 1:1 in its response.
-                numbered_input = "\n".join(f"{j + 1}. {text}" for j, text in enumerate(batch))
-                user_prompt = self.user_prompt_template.format_map(_SafeDict(**ctx, text=numbered_input))
-
-                def _do_request():
-                    return client.chat.completions.create(
-                        model=self.model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                    )
-
                 self.logger.info(f"Translating segments {done + 1}-{done + len(batch)}/{len(segments)} with OpenAI")
-                response = _retry_with_backoff(
-                    logger=self.logger,
-                    max_retries=max_retries,
-                    initial_delay_seconds=initial_delay,
-                    max_delay_seconds=max_delay,
-                    backoff_multiplier=backoff_mult,
-                    jitter_ratio=jitter_ratio,
-                    is_retryable=_is_retryable,
-                    get_retry_after_seconds=_retry_after,
-                    op=_do_request,
-                )
-                content = response.choices[0].message.content or ""
-                lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
-                # Strip a leading "N." numbering if the model echoed it back.
-                cleaned = []
-                for ln in lines:
-                    parts = ln.split(".", 1)
-                    if len(parts) == 2 and parts[0].strip().isdigit():
-                        cleaned.append(parts[1].strip())
-                    else:
-                        cleaned.append(ln)
+                cleaned = _request_batch(batch)
+
+                if len(batch) > 1 and len(cleaned) != len(batch):
+                    # The model sometimes merges/splits fragmented lines instead of respecting
+                    # the numbered 1:1 format, which would silently misalign translations with
+                    # their segments. Retranslate this batch one segment at a time instead.
+                    self.logger.warning(
+                        f"OpenAI returned {len(cleaned)} line(s) for a batch of {len(batch)} segments "
+                        f"(segments {done + 1}-{done + len(batch)}/{len(segments)}); "
+                        "retranslating this batch one segment at a time to keep alignment."
+                    )
+                    cleaned = []
+                    for text in batch:
+                        single = _request_batch([text])
+                        cleaned.append(single[0] if single else text)
 
                 for j, original in enumerate(batch):
                     translated = cleaned[j] if j < len(cleaned) else original

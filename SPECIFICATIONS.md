@@ -259,6 +259,7 @@ Voir §5 pour le détail des fournisseurs. Points communs :
   - Téléchargements (YouTube/m3u8) : dossier `output.video_download_directory`.
   - Fichiers locaux : à côté du fichier vidéo source.
   - Dans les deux cas, `--dest` permet d'overrider pour un run donné.
+- **Sauvegarde de la transcription originale** : en plus du `.srt` traduit, un fichier de backup contenant la transcription dans la langue source (avant traduction), avec les mêmes horodatages, est écrit à côté dans le même dossier, au format `<base>.<langue_source>.bak` (même format `.srt` en interne, juste une extension `.bak`). Exemple : pour `toto.mp4` transcrit en japonais et traduit en français, on obtient `toto.fr.srt` et `toto.jp.bak`. Ce fichier permet de retrouver le texte original si besoin (relecture, retraduction manuelle, etc.) sans avoir à retranscrire la vidéo. En cas de sélection de chapitres (§3.6), c'est la transcription originale fusionnée (tous les chapitres sélectionnés, renumérotée en continu) qui est sauvegardée dans un unique `.bak`, de la même façon que le `.srt` traduit fusionné.
 
 ### 3.9 Gestion des fichiers existants
 
@@ -356,6 +357,7 @@ Deux fournisseurs actifs, choisis via `translation.service` dans `config.yaml` :
 - Clé API : `config.local.yaml` (recommandé), variable d'environnement `OPENAI_API_KEY`, ou `translation.api_keys.openai`.
 - Meilleur pour les lignes riches en contexte (jeux de mots, tonalité, argot, références culturelles), plus lent et plus coûteux que DeepL mais choisi comme fournisseur par défaut pour sa meilleure qualité contextuelle.
 - Seul fournisseur exposant un système de **prompts personnalisables** (voir §5.3).
+- Alignement segments ↔ traductions : les segments d'un batch sont envoyés sous forme de liste numérotée ; la réponse est découpée ligne par ligne pour ré-associer chaque traduction à son segment d'origine. Si le modèle ne respecte pas le format 1 ligne = 1 segment (ex. fusion de segments courts/fragmentés en une phrase plus naturelle), le batch entier est retraduit segment par segment (`batch_size` effectif de 1 pour ce batch), avec un warning loggé indiquant le nombre de lignes reçu vs. attendu. Cela évite qu'un texte non traduit (langue source) ne se retrouve silencieusement dans le sous-titre final.
 
 ### 5.3 Système de prompts
 
@@ -371,6 +373,10 @@ Trois champs, tous supportant les *placeholders* suivants (remplis automatiqueme
 | `system_prompt` | Instructions **générales et stables**, valables pour tous les projets. Défini une fois, rarement modifié. | `config.prompt.yaml` |
 | `system_prompt_extended` | Instructions **spécifiques au run/à la série/au streamer en cours**, à personnaliser librement à chaque projet de traduction (contexte du contenu, ton particulier, glossaire, façon de gérer le chat, etc.). Concaténé après `system_prompt`. Modifié fréquemment. | `config.prompt.yaml` |
 | `user_prompt_template` | Gabarit du message utilisateur envoyé au modèle (par défaut `"{text}"`, généralement à ne pas modifier). | `config.yaml` (reste avec les autres réglages techniques d'OpenAI, car il n'est quasiment jamais modifié) |
+
+#### Bibliothèque de prompts sauvegardés (`saved_prompts`)
+
+`config.prompt.yaml` peut contenir une clé optionnelle `saved_prompts` (mapping nommé, ex. `saved_prompts.bish_concert`) servant de **bibliothèque personnelle de prompts `system_prompt_extended` passés/mis de côté**, pour pouvoir les réutiliser sur un projet futur sans les perdre. Cette clé n'est **jamais lue par le code** (seul le champ exact `system_prompt_extended` est envoyé au modèle) — c'est un espace de stockage texte pur, géré manuellement par l'utilisateur : pour réactiver un prompt sauvegardé, il faut recopier son contenu dans `system_prompt_extended`. Avant d'écraser `system_prompt_extended` pour un nouveau projet, l'utilisateur est libre d'archiver son contenu actuel sous une nouvelle entrée de `saved_prompts`.
 
 #### Fichier dédié `config.prompt.yaml`
 
@@ -626,6 +632,8 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 
 ## 11. Historique des décisions
 
+- **[Cette version]** Ajout de la clé optionnelle `saved_prompts` dans `config.prompt.yaml` : bibliothèque de prompts `system_prompt_extended` archivés (non lue par le code), pour permettre de conserver et réutiliser plus tard les prompts d'anciens projets sans les perdre ni les confondre avec le prompt actif.
+- **[Cette version]** Correction bug : avec le fournisseur OpenAI, quand le modèle ne renvoyait pas exactement une ligne par segment du batch (fusion de segments courts/fragmentés), les segments en trop retombaient silencieusement sur le texte source non traduit dans le `.srt` final. Le batch concerné est maintenant retraduit segment par segment avec un warning loggé.
 - **[Cette version]** Changement du fournisseur de traduction par défaut : `translation.service` passe de `"deepl"` à `"openai"` dans `config.yaml`.
 - **[Cette version]** Suppression du code de doublage/TTS (jamais fonctionnel, non branché) du périmètre du projet.
 - **[Cette version]** Retrait des fournisseurs de traduction `google_translate` et `azure` du périmètre actif (non recommandés / non implémentés).
@@ -658,3 +666,4 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Ajout de la détection automatique des URL de tweet X/Twitter (`/status/<id>`) comme nouvelle source d'entrée (§3.1/§3.1.1) : téléchargement direct si une seule vidéo est trouvée par yt-dlp pour ce tweet, sinon affichage d'une liste numérotée (vidéo du tweet + vidéo(s) de tweet(s) cité(s)) et sélection interactive de la vidéo à traiter.
 - **[Cette version]** `--listchapters` prévisualise désormais **toujours** l'auto-sélection par motifs (`chapter_autoselect_patterns`), même sans `--autoselectchapters` : usage attendu de `--listchapters` étant justement de vérifier rapidement ses regex sur une vidéo donnée, exiger `--asc` en plus était une friction inutile. Nouvelle fonction `_listchapters_selection_preview` (main.py), couverte par `tests/unit/test_chapter_selection.py`.
 - **[Cette version]** Lorsque plusieurs chapitres sont sélectionnés (`--chapters`/`--autoselectchapters`), les sous-titres de chaque chapitre sont désormais **fusionnés en un unique fichier `.srt`** au lieu de produire un fichier séparé par chapitre (`_chN`). Extraction de la logique de transcription/traduction dans `_translate_range` (retourne des `SubtitleCue` sans écrire de fichier), réutilisée par `_translate_and_write` (cas mono-fichier) et par la boucle de sélection de chapitres dans `main()` (concatène puis renumérote les cues avant un unique `write_srt`).
+- **[Cette version]** Ajout de la sauvegarde de la transcription originale (langue source) à côté du `.srt` traduit, au format `<base>.<langue_source>.bak` (§3.8), pour conserver le texte source sans avoir à retranscrire. `_translate_range` retourne désormais `(cues, original_cues)` ; nouvelle fonction `_write_original_backup` (main.py), appelée par `_translate_and_write` et par la boucle de sélection de chapitres (backup fusionné, comme le `.srt`). Tests dans `tests/unit/test_resume.py`.

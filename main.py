@@ -446,10 +446,12 @@ def _translate_range(
     *, config: Dict[str, Any], logger: logging.Logger, video_path: str, output_basename: str,
     subtitles_dir: Path, source_lang: str, target_lang: str, resume: bool,
     time_range: Optional[Tuple[float, float]] = None,
-) -> List[SubtitleCue]:
-    """Transcribe and translate a (portion of a) video, returning subtitle cues
-    without writing them to disk. `output_basename` is only used for the cache
-    file name."""
+) -> Tuple[List[SubtitleCue], List[SubtitleCue]]:
+    """Transcribe and translate a (portion of a) video, returning
+    `(translated_cues, original_cues)` without writing them to disk. `original_cues` holds the
+    raw transcription (source language) text aligned on the same timings, so callers can save it
+    as a `.bak` backup alongside the translated `.srt`. `output_basename` is only used for the
+    cache file name."""
     audio_processor = AudioProcessor(config)
     recognizer = SpeechRecognizerFactory.create_recognizer(config)
     translator = TranslatorFactory.create_translator(config)
@@ -507,8 +509,19 @@ def _translate_range(
         translated.extend(seg.translated_text for seg in result.segments)
 
     cues = build_cues(starts, ends, translated)
+    original_cues = build_cues(starts, ends, originals)
     cache_path.unlink(missing_ok=True)
-    return cues
+    return cues, original_cues
+
+
+def _write_original_backup(original_cues: List[SubtitleCue], subtitles_dir: Path, output_basename: str,
+                            source_lang: str, logger: logging.Logger) -> Path:
+    """Save the original-language transcription as a `.bak` file next to the translated `.srt`,
+    e.g. `toto.jp.bak` for a `toto.mp4` transcribed from Japanese (see SPECIFICATIONS.md)."""
+    backup_path = subtitles_dir / f"{output_basename}.{source_lang}.bak"
+    write_srt(original_cues, backup_path)
+    logger.info(_green(f"Original subtitles backed up: {backup_path}"))
+    return backup_path
 
 
 def _translate_and_write(
@@ -516,7 +529,7 @@ def _translate_and_write(
     subtitles_dir: Path, source_lang: str, target_lang: str, resume: bool,
     time_range: Optional[Tuple[float, float]] = None,
 ) -> Path:
-    cues = _translate_range(
+    cues, original_cues = _translate_range(
         config=config, logger=logger, video_path=video_path, output_basename=output_basename,
         subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang,
         resume=resume, time_range=time_range,
@@ -525,6 +538,7 @@ def _translate_and_write(
     output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
     write_srt(cues, output_path)
     logger.info(_green(f"Subtitles written: {output_path}"))
+    _write_original_backup(original_cues, subtitles_dir, output_basename, source_lang, logger)
     return output_path
 
 
@@ -649,24 +663,29 @@ def main() -> int:
 
             if selected_idx:
                 all_cues: List[SubtitleCue] = []
+                all_original_cues: List[SubtitleCue] = []
                 for i in selected_idx:
                     ch = chapters[i]
                     time_range = (float(ch["start_time"]), float(ch["end_time"]))
                     basename = f"{output_basename}_ch{i + 1}"
-                    chapter_cues = _translate_range(
+                    chapter_cues, chapter_original_cues = _translate_range(
                         config=config, logger=logger, video_path=video_path, output_basename=basename,
                         subtitles_dir=subtitles_dir, source_lang=source_lang, target_lang=target_lang,
                         resume=args.resume, time_range=time_range,
                     )
                     all_cues.extend(chapter_cues)
+                    all_original_cues.extend(chapter_original_cues)
 
                 for idx, cue in enumerate(all_cues, start=1):
+                    cue.index = idx
+                for idx, cue in enumerate(all_original_cues, start=1):
                     cue.index = idx
 
                 desired_path = subtitles_dir / f"{output_basename}.{target_lang}.srt"
                 output_path = _resolve_output_path(desired_path, config.setdefault("_runtime", {}))
                 write_srt(all_cues, output_path)
                 logger.info(_green(f"Subtitles written: {output_path}"))
+                _write_original_backup(all_original_cues, subtitles_dir, output_basename, source_lang, logger)
                 if download_cache_path is not None:
                     download_cache_path.unlink(missing_ok=True)
                 return 0

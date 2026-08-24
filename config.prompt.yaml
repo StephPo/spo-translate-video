@@ -2,9 +2,16 @@
 # See SPECIFICATIONS.md section 5.3 for the full rationale.
 #
 # system_prompt: general, stable subtitle-translation rules. Rarely edited.
-# system_prompt_extended: project-specific instructions (this streamer, this
-# series, this glossary...). Edited often — feel free to rewrite it entirely
-# for each new project.
+#
+# system_prompt_extended: the ACTIVE project-specific prompt. This exact key
+# is the only one read by translator.py and actually sent to the model.
+# Edit it directly for the project you're currently translating.
+#
+# saved_prompts: a personal library of past/other projects' extended prompts,
+# kept here for later reuse. NOT read by the code — just plain YAML text for
+# convenience. To reactivate one: copy its content into `system_prompt_extended`
+# above. Add a new entry here (with a descriptive key) whenever you want to
+# archive the current `system_prompt_extended` before overwriting it.
 
 system_prompt: >
   You are a professional subtitle translator specialized in {source_language_name} to
@@ -40,16 +47,22 @@ system_prompt: >
 # - Specific tone: "The host is sarcastic; preserve sarcasm, don't soften it."
 #
 # Leave empty ("") if system_prompt alone is enough.
-system_prompt_extended_Bish_Concert: >
-  The subtitles contain all spoken interventions by the members, including introductions, MC segments, conversations between members, jokes, comments to the audience, thanks, announcements, and other spoken remarks between or during songs.
-  This is a BiSH live concert, so expressions such as crowd interaction, calls to the audience, emotional comments, MC jokes, references to previous performances, tour history, members, songs, and the atmosphere of the venue should be interpreted in that context.
-  The members are:
-  - Cent Chihiro Chittiii
-  - Momoko Gumi Company
-  - Aina the End
-  - Hashiyasume Atsuko
-  - Lingling
-  - Ayuni D
+system_prompt_extended: ""
 
-  The concert is: NEVERMiND TOUR Final
-  Venue: Zepp Tokyo
+# --------------------------------------------------------------------------
+# Saved prompts (inactive — reference library only, see note at top of file)
+# --------------------------------------------------------------------------
+saved_prompts:
+  bish_concert: >
+    The subtitles contain all spoken interventions by the members, including introductions, MC segments, conversations between members, jokes, comments to the audience, thanks, announcements, and other spoken remarks between or during songs.
+    This is a BiSH live concert, so expressions such as crowd interaction, calls to the audience, emotional comments, MC jokes, references to previous performances, tour history, members, songs, and the atmosphere of the venue should be interpreted in that context.
+    The members are:
+    - Cent Chihiro Chittiii
+    - Momoko Gumi Company
+    - Aina the End
+    - Hashiyasume Atsuko
+    - Lingling
+    - Ayuni D
+
+    The concert is: NEVERMiND TOUR Final
+    Venue: Zepp Tokyo

@@ -71,7 +71,7 @@ def test_translate_range_without_resume_runs_full_pipeline(tmp_path, monkeypatch
         monkeypatch, recognizer=_FakeRecognizer(segments)
     )
 
-    cues = main._translate_range(
+    cues, original_cues = main._translate_range(
         config={}, logger=main.logging.getLogger("test"), video_path="video.mp4",
         output_basename="video", subtitles_dir=tmp_path, source_lang="ja", target_lang="fr",
         resume=False,
@@ -81,6 +81,7 @@ def test_translate_range_without_resume_runs_full_pipeline(tmp_path, monkeypatch
     assert recognizer.calls == 1
     assert translator.received_segments == ["hello"]
     assert [c.text for c in cues] == ["HELLO"]
+    assert [c.text for c in original_cues] == ["hello"]
 
 
 def test_translate_range_resumes_from_partial_translation_cache(tmp_path, monkeypatch):
@@ -94,7 +95,7 @@ def test_translate_range_resumes_from_partial_translation_cache(tmp_path, monkey
         "originals": ["bonjour", "monde"], "segments": ["HELLO"],
     })
 
-    cues = main._translate_range(
+    cues, original_cues = main._translate_range(
         config={}, logger=main.logging.getLogger("test"), video_path="video.mp4",
         output_basename="video", subtitles_dir=tmp_path, source_lang="ja", target_lang="fr",
         resume=True,
@@ -106,6 +107,7 @@ def test_translate_range_resumes_from_partial_translation_cache(tmp_path, monkey
     # Only the remaining (not-yet-translated) segment is sent to the translator.
     assert translator.received_segments == ["monde"]
     assert [c.text for c in cues] == ["HELLO", "MONDE"]
+    assert [c.text for c in original_cues] == ["bonjour", "monde"]
     # Cache is cleared once every segment is translated.
     assert not cache_path.exists()
 
@@ -121,7 +123,7 @@ def test_translate_range_resumes_with_empty_segments_cache_does_not_retranscribe
         "starts": [0.0], "ends": [1.0], "originals": ["bonjour"], "segments": [],
     })
 
-    cues = main._translate_range(
+    cues, original_cues = main._translate_range(
         config={}, logger=main.logging.getLogger("test"), video_path="video.mp4",
         output_basename="video", subtitles_dir=tmp_path, source_lang="ja", target_lang="fr",
         resume=True,
@@ -131,6 +133,7 @@ def test_translate_range_resumes_with_empty_segments_cache_does_not_retranscribe
     assert recognizer.calls == 0
     assert translator.received_segments == ["bonjour"]
     assert [c.text for c in cues] == ["BONJOUR"]
+    assert [c.text for c in original_cues] == ["bonjour"]
 
 
 def test_translate_range_resume_ignores_stale_cache_when_flag_not_set(tmp_path, monkeypatch):
@@ -181,6 +184,29 @@ def test_translate_range_saves_cache_on_translation_failure(tmp_path, monkeypatc
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
     assert cached["originals"] == ["hello"]
     assert cached["segments"] == []
+
+
+# --------------------------------------------------------------------------
+# Original-language backup (.bak) alongside the translated .srt
+# --------------------------------------------------------------------------
+
+def test_translate_and_write_saves_original_language_backup(tmp_path, monkeypatch):
+    segments = [TranscriptionSegment(start_time=0.0, end_time=1.0, text="konnichiwa", confidence=1.0)]
+    _install_fakes(monkeypatch, recognizer=_FakeRecognizer(segments))
+
+    output_path = main._translate_and_write(
+        config={}, logger=main.logging.getLogger("test"), video_path="toto.mp4",
+        output_basename="toto", subtitles_dir=tmp_path, source_lang="ja", target_lang="fr",
+        resume=False,
+    )
+
+    assert output_path == tmp_path / "toto.fr.srt"
+    assert output_path.exists()
+
+    backup_path = tmp_path / "toto.ja.bak"
+    assert backup_path.exists()
+    assert "konnichiwa" in backup_path.read_text(encoding="utf-8")
+    assert "KONNICHIWA" not in backup_path.read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
