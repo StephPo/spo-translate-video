@@ -105,23 +105,24 @@ Même pipeline que le mode CLI (§2.1)
 - Deux bookmarklets JavaScript (fournis dans le guide d'installation) à ajouter comme favoris dans le navigateur. Ils :
   - fonctionnent sur l'onglet courant ;
   - extraient l'identifiant vidéo YouTube (`watch?v=`, `youtu.be/`, `/shorts/`) ;
-  - ignorent les paramètres de playlist / tracking.
+  - ignorent les paramètres de playlist / tracking ;
+  - **reconnaissent aussi les pages de tweet X/Twitter** (`x.com` ou `twitter.com`, `/<user>/status/<id>`) : dans ce cas, comme il n'y a pas d'identifiant vidéo court exploitable côté client (yt-dlp a besoin de l'URL complète du tweet, voir §3.1.1), le bookmarklet transmet l'**URL complète de la page**, encodée, plutôt qu'un simple ID.
 
 **Code des deux bookmarklets** (à coller tel quel comme URL d'un favori) :
 
 Bookmarklet "SPO Download" (`spodl:`, téléchargement seul) :
 
 ```
-javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(!m){alert('Aucun ID vidéo YouTube trouve dans cette page.');return;}location.href='spodl:'+m[1];})();
+javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(m){location.href='spodl:'+m[1];return;}if(/(?:^https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/[^/]+\/status\/\d+/i.test(u)){location.href='spodl:'+encodeURIComponent(u);return;}alert('Aucun ID video YouTube ou tweet trouve dans cette page.');})();
 ```
 
 Bookmarklet "SPO Translate" (`spotr:`, téléchargement + transcription + traduction) :
 
 ```
-javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(!m){alert('Aucun ID vidéo YouTube trouve dans cette page.');return;}location.href='spotr:'+m[1];})();
+javascript:(function(){var u=location.href;var m=u.match(/[?&]v=([^&]+)/)||u.match(/youtu\.be\/([^?&/]+)/)||u.match(/\/shorts\/([^?&/]+)/);if(m){location.href='spotr:'+m[1];return;}if(/(?:^https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/[^/]+\/status\/\d+/i.test(u)){location.href='spotr:'+encodeURIComponent(u);return;}alert('Aucun ID video YouTube ou tweet trouve dans cette page.');})();
 ```
 
-Ces deux extraits produisent respectivement une navigation vers `spodl:VIDEO_ID` et `spotr:VIDEO_ID`, conformément au mécanisme ci-dessus. Voir §7.3 pour la procédure d'ajout au navigateur.
+Ces deux extraits produisent une navigation vers `spodl:VIDEO_ID`/`spotr:VIDEO_ID` (YouTube) ou `spodl:<URL encodée>`/`spotr:<URL encodée>` (tweet X/Twitter), conformément au mécanisme ci-dessus. Voir §7.3 pour la procédure d'ajout au navigateur. Le gestionnaire de protocole (`spo-protocol-handler.ps1`) détecte qu'une valeur reçue après `spodl:`/`spotr:` est déjà une URL complète (`https?://...`, une fois décodée) et la transmet telle quelle au pipeline (au lieu de la traiter comme un identifiant vidéo YouTube), qui applique ensuite sa détection automatique habituelle (§3.1) pour reconnaître qu'il s'agit d'un tweet.
 
 **Exigence de fiabilité (corrige le bug connu "l'invite de commande s'ouvre, reste quelques instants, puis se ferme sans rien exécuter") :**
 
@@ -666,4 +667,5 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Ajout de la détection automatique des URL de tweet X/Twitter (`/status/<id>`) comme nouvelle source d'entrée (§3.1/§3.1.1) : téléchargement direct si une seule vidéo est trouvée par yt-dlp pour ce tweet, sinon affichage d'une liste numérotée (vidéo du tweet + vidéo(s) de tweet(s) cité(s)) et sélection interactive de la vidéo à traiter.
 - **[Cette version]** `--listchapters` prévisualise désormais **toujours** l'auto-sélection par motifs (`chapter_autoselect_patterns`), même sans `--autoselectchapters` : usage attendu de `--listchapters` étant justement de vérifier rapidement ses regex sur une vidéo donnée, exiger `--asc` en plus était une friction inutile. Nouvelle fonction `_listchapters_selection_preview` (main.py), couverte par `tests/unit/test_chapter_selection.py`.
 - **[Cette version]** Lorsque plusieurs chapitres sont sélectionnés (`--chapters`/`--autoselectchapters`), les sous-titres de chaque chapitre sont désormais **fusionnés en un unique fichier `.srt`** au lieu de produire un fichier séparé par chapitre (`_chN`). Extraction de la logique de transcription/traduction dans `_translate_range` (retourne des `SubtitleCue` sans écrire de fichier), réutilisée par `_translate_and_write` (cas mono-fichier) et par la boucle de sélection de chapitres dans `main()` (concatène puis renumérote les cues avant un unique `write_srt`).
+- **[Cette version]** Correction bug : les bookmarklets (§2.2) ne reconnaissaient que les URL YouTube et affichaient "Aucun ID vidéo YouTube trouvé dans cette page." sur une page de tweet X/Twitter, alors que ce type de source est supporté par le pipeline (§3.1) depuis son ajout — support jamais répercuté dans les bookmarklets. Fix : les bookmarklets reconnaissent désormais aussi les pages `x.com`/`twitter.com` `/status/<id>` et transmettent l'URL complète encodée (`spodl:`/`spotr:` + `encodeURIComponent(location.href)`) plutôt qu'un ID ; `spo-protocol-handler.ps1` (`ConvertTo-YouTubeUrl`) décode désormais la valeur reçue avant de vérifier si c'est déjà une URL complète.
 - **[Cette version]** Ajout de la sauvegarde de la transcription originale (langue source) à côté du `.srt` traduit, au format `<base>.<langue_source>.bak` (§3.8), pour conserver le texte source sans avoir à retranscrire. `_translate_range` retourne désormais `(cues, original_cues)` ; nouvelle fonction `_write_original_backup` (main.py), appelée par `_translate_and_write` et par la boucle de sélection de chapitres (backup fusionné, comme le `.srt`). Tests dans `tests/unit/test_resume.py`.

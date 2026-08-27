@@ -54,6 +54,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($value)) { return '' }
     $v = $value
     if ($Mode -eq 'dl') { $v = $v -replace '^spodl:(//)?', '' } else { $v = $v -replace '^spotr:(//)?', '' }
+    try { $v = [System.Uri]::UnescapeDataString($v) } catch { }
     if ($v -match '^https?://') { return $v }
     if ($v -match '^(www\.)?(youtube\.com|youtu\.be)/') { return 'https://' + $v }
     return 'https://www.youtube.com/watch?v=' + $v
