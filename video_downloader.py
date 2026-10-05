@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -121,6 +122,64 @@ class _YtDlpLogger:
 
     def report_warning(self, msg):
         self.warning(msg)
+
+
+class _ProgressDisplay:
+    """Simple progress display for downloads."""
+
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+        self._lock = threading.Lock()
+        self._last_update = 0
+        self._last_line = ""
+
+    def update(self, progress: Dict[str, Any]):
+        """Update progress display from yt-dlp progress hook."""
+        with self._lock:
+            try:
+                downloaded = progress.get("downloaded_bytes", 0)
+                total = progress.get("total_bytes") or progress.get("total_bytes_estimate", 0)
+                speed = progress.get("speed", 0)
+                eta = progress.get("eta", 0)
+
+                if total > 0:
+                    percent = (downloaded / total) * 100
+                    downloaded_mb = downloaded / (1024 * 1024)
+                    total_mb = total / (1024 * 1024)
+
+                    parts = [f"Downloading: {percent:.1f}%"]
+                    parts.append(f"{downloaded_mb:.1f}MB / {total_mb:.1f}MB")
+
+                    if speed > 0:
+                        speed_mb = speed / (1024 * 1024)
+                        parts.append(f"@ {speed_mb:.2f}MB/s")
+
+                    if eta > 0:
+                        eta_min = int(eta // 60)
+                        eta_sec = int(eta % 60)
+                        parts.append(f"ETA: {eta_min:02d}:{eta_sec:02d}")
+
+                    line = " | ".join(parts)
+
+                    # Only update if line changed or 1 second passed
+                    import time
+                    now = time.time()
+                    if line != self._last_line or now - self._last_update >= 1.0:
+                        self._last_line = line
+                        self._last_update = now
+                        # Print with carriage return to overwrite previous line
+                        if _supports_ansi():
+                            print(f"\r{line}", end="", flush=True)
+                        else:
+                            print(line)
+            except Exception:
+                pass  # Don't let progress display errors break the download
+
+    def finish(self):
+        """Clear the progress line."""
+        with self._lock:
+            if _supports_ansi():
+                print("\r" + " " * 100 + "\r", end="", flush=True)
 
 
 class VideoDownloader:
@@ -387,12 +446,21 @@ class VideoDownloader:
         best_height = self.preflight_best_height(url, playlist_index=playlist_index)
 
         logger = _YtDlpLogger(self.logger)
+        progress_display = _ProgressDisplay(self.logger)
+
+        def progress_hook(d):
+            if d["status"] == "downloading":
+                progress_display.update(d)
+            elif d["status"] == "finished":
+                progress_display.finish()
+
         opts = self._base_ydl_opts(logger, playlist_index=playlist_index)
         opts.update({
             "format": "bestvideo+bestaudio/best",
             "outtmpl": str(self.temp_dir / f"%(id)s{attempt_suffix}.%(ext)s"),
             "restrictfilenames": True,
             "merge_output_format": "mp4",
+            "progress_hooks": [progress_hook],
         })
         self.logger.info(f"Equivalent command: {self._describe_cli(url, opts, download=True)}")
 
@@ -405,6 +473,8 @@ class VideoDownloader:
                 fp = info["requested_downloads"][0].get("filepath")
                 if fp:
                     downloaded_path = Path(fp)
+
+        progress_display.finish()
 
         if not downloaded_path.exists():
             # Some extractors (observed with X/Twitter) leave `ext` unresolved ("NA") on the
@@ -594,13 +664,68 @@ class VideoDownloader:
                 "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
                 "-i", url,
                 "-c", "copy",
+                "-progress", "pipe:1",
                 str(dest),
             ]
             self.logger.info(f"Downloading m3u8 via ffmpeg -> {dest}")
-            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
-            if proc.returncode != 0:
-                return DownloadResult(success=False, error=f"ffmpeg failed: {proc.stderr[-2000:]}")
-            return DownloadResult(success=True, video_path=str(dest), title=base)
+
+            progress_display = _ProgressDisplay(self.logger)
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1  # Line buffered
+            )
+
+            try:
+                import time
+                last_update = 0
+                last_line = ""
+
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+
+                    # Parse ffmpeg progress output
+                    if line.startswith("out_time_ms="):
+                        try:
+                            current_time_ms = int(line.split("=")[1].strip())
+                            # Note: we don't have total duration easily without parsing the stream first
+                            # So we'll just show the current time downloaded
+                            time_sec = current_time_ms / 1_000_000
+                            time_min = int(time_sec // 60)
+                            time_sec_rem = int(time_sec % 60)
+                            progress_line = f"Downloading m3u8: {time_min:02d}:{time_sec_rem:02d}"
+
+                            now = time.time()
+                            if progress_line != last_line or now - last_update >= 1.0:
+                                last_line = progress_line
+                                last_update = now
+                                if _supports_ansi():
+                                    print(f"\r{progress_line}", end="", flush=True)
+                                else:
+                                    print(progress_line)
+                        except (ValueError, IndexError):
+                            pass
+
+                proc.wait()
+
+                progress_display.finish()
+
+                if proc.returncode != 0:
+                    stderr_output = proc.stderr.read() if proc.stderr else ""
+                    return DownloadResult(success=False, error=f"ffmpeg failed: {stderr_output[-2000:]}")
+
+                return DownloadResult(success=True, video_path=str(dest), title=base)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
         except FileNotFoundError:
             return DownloadResult(success=False, error=f"ffmpeg not found. Configure video.ffmpeg_path or add ffmpeg to PATH: {self.ffmpeg_path}")
         except Exception as e:

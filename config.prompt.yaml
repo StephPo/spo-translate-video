@@ -53,6 +53,9 @@ system_prompt_extended: ""
 # Saved prompts (inactive — reference library only, see note at top of file)
 # --------------------------------------------------------------------------
 saved_prompts:
+  pedro_FC: >
+    The subtitles contain a live chat from Ayuni D of Pedro, japanese bad. This is a live stream where Ayuni D talks about her news from latest months, read comments and questions from the chat, and answers them.
+   
   bish_concert: >
     The subtitles contain all spoken interventions by the members, including introductions, MC segments, conversations between members, jokes, comments to the audience, thanks, announcements, and other spoken remarks between or during songs.
     This is a BiSH live concert, so expressions such as crowd interaction, calls to the audience, emotional comments, MC jokes, references to previous performances, tour history, members, songs, and the atmosphere of the venue should be interpreted in that context.

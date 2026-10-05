@@ -211,8 +211,9 @@ Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieur
   - Gestion du **runtime JavaScript requis par YouTube** pour résoudre les défis d'extraction (voir §4).
   - Gestion des **composants distants de contournement** (`remote_components`, ex. `ejs:github`).
   - Détection et avertissement explicite si yt-dlp signale l'absence de runtime JS ou un échec de résolution de challenge (signature/n-challenge).
-- **`.m3u8`** : téléchargement/remux direct via `ffmpeg` (pas de transcodage, copie des flux) vers un `.mp4`.
+- **`.m3u8`** : téléchargement/remux direct via `ffmpeg` (pas de transcodage, copie des flux) vers un `.mp4`. Une barre de progression est affichée pendant le téléchargement.
 - **Fichier local** : utilisé tel quel, aucun téléchargement.
+- **Barre de progression** : pendant le téléchargement (YouTube via yt-dlp ou m3u8 via ffmpeg), une barre de progression est affichée en temps réel pour montrer l'avancement du téléchargement (pourcentage, taille téléchargée, vitesse, temps restant estimé).
 
 ### 3.4 Extraction audio
 
@@ -641,6 +642,7 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Introduction du champ `system_prompt_extended` comme mécanisme officiel de personnalisation par projet, avec nouveau `system_prompt` par défaut générique.
 - **[Cette version]** Formalisation des exigences de fiabilité du déclenchement navigateur (protocole d'URL personnalisé).
 - **[Cette version]** Retrait des options CLI `--source-type`, `--output-basename` et `--no-progress` (détection auto systématique, nom de fichier par défaut satisfaisant, progression toujours affichée).
+- **[Cette version]** Ajout d'une barre de progression lors de la phase de téléchargement (YouTube via yt-dlp et m3u8 via ffmpeg) pour afficher l'avancement en temps réel.
 - **[Cette version]** Extraction de `system_prompt` / `system_prompt_extended` dans un fichier dédié `config.prompt.yaml`, distinct de `config.yaml`, car modifié beaucoup plus fréquemment que le reste de la configuration.
 - **[Cette version]** Changement du sélecteur de format YouTube par défaut : vraie meilleure qualité tous conteneurs (`bestvideo+bestaudio/best`) + remux `.mp4` si nécessaire, au lieu d'une sélection restreinte au MP4 qui pouvait dégrader la résolution téléchargée. Ajout d'un avertissement obligatoire si la qualité effectivement obtenue reste inférieure à la meilleure disponible.
 - **[Cette version]** Renforcement des exigences de diagnostic pour le bug connu du déclenchement navigateur (fenêtre qui se ferme sans exécuter) : `try`/`catch` global, log systématique, affichage de la commande exacte tentée pour permettre de la rejouer manuellement.
