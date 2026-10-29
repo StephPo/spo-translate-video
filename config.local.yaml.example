@@ -5,3 +5,8 @@ translation:
   api_keys:
     deepl: "YOUR_DEEPL_KEY"
     openai: "YOUR_OPENAI_KEY"
+
+# sp.pedro.tokyo fan club account (shared by every script targeting this site, e.g. spo-pedro-shitsumons.bat)
+pedro_education_club:
+  login: "YOUR_LOGIN"
+  password: "YOUR_PASSWORD"

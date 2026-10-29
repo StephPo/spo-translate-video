@@ -37,6 +37,16 @@ copy config.prompt.example.yaml config.prompt.yaml
 .\spo-translate-video.bat "https://www.youtube.com/watch?v=VIDEO_ID" --resume
 ```
 
+## PEDRO fan club Q&A (sp.pedro.tokyo)
+
+Extracts every "NEW" message of https://sp.pedro.tokyo/qa/list/1/ with its ANSWER, translates them and writes a Markdown file in `output/pedro_shitsumons/` (opened automatically). Put `pedro_education_club.login` / `pedro_education_club.password` in `config.local.yaml` (see `config.local.yaml.example`), then:
+
+```powershell
+.\spo_pedro_shitsumons.bat
+```
+
+Details and options: `SPECIFICATIONS.md` section 3.12.
+
 ## One-click from a YouTube page (Windows)
 
 ```powershell

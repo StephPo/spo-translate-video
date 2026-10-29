@@ -88,6 +88,24 @@ processing:
   # How many days of old ./temp/run_* directories to keep before pruning
   temp_keep_days: 2
 
+pedro_education_club:
+  # Shared by every script targeting the sp.pedro.tokyo fan club site (SPECIFICATIONS.md section 3.12).
+  # login / password go in config.local.yaml (same section name), NOT here.
+  base_url: "https://sp.pedro.tokyo"
+  # The site only works with a mobile browser User-Agent
+  user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+pedro_shitsumons:
+  # spo_pedro_shitsumons.bat / pedro_shitsumons.py (SPECIFICATIONS.md section 3.12).
+  list_path: "/qa/list/1/"
+  # Max list pages scanned (stops earlier at the first non-NEW message)
+  max_pages: 20
+  request_delay_seconds: 0.5
+  output_directory: "./output/pedro_shitsumons"
+  temp_directory: "./temp/pedro_shitsumons"
+  # Open the generated .md file at the end
+  open_output: true
+
 advanced:
   gpu_acceleration: false
   gpu_device: 0

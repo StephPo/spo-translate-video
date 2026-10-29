@@ -288,6 +288,22 @@ Voir §5 pour le détail des fournisseurs. Points communs :
   - Les **exceptions non interceptées** (traceback Python en fin de run, ex. `RuntimeError: Download failed: ...`) sont également écrites dans ce fichier (`sys.excepthook`), en plus de leur affichage console habituel (inchangé, sur stderr) — utile pour transmettre le fichier de log complet en cas de bug plutôt que copier-coller la console.
   - **Codes couleur ANSI filtrés dans le fichier** : la sortie console reste colorée normalement (vert/jaune/rouge, inchangé), mais le fichier de log (destiné à être relu/collé tel quel) ne contient jamais les séquences d'échappement ANSI brutes (`main._StripAnsiFormatter`, appliqué uniquement au handler fichier).
 
+### 3.12 Outil annexe : extraction + traduction du Q&A PEDRO (`spo_pedro_shitsumons.bat`)
+
+Outil **spécifique au site du fan club PEDRO** (`https://sp.pedro.tokyo/qa/list/1/`), indépendant du pipeline vidéo mais réutilisant le même venv, les mêmes fichiers de config et le même module de traduction (`translator.py`, §5). Pas d'objectif de généricité.
+
+- Point d'entrée : `spo_pedro_shitsumons.bat [options]` → `pedro_shitsumons.py`. Le `.bat` réutilise le même `.venv` que `spo-translate-video.bat` et installe `beautifulsoup4` s'il manque (venvs créés avant son ajout à `requirements.txt`).
+- Le site n'accepte que les navigateurs mobiles : toutes les requêtes envoient un User-Agent mobile (`pedro_education_club.user_agent`).
+- **Configuration partagée** : les réglages communs à tous les scripts visant le site du fan club sont dans une section `pedro_education_club` : `base_url` et `user_agent` dans `config.yaml`, `login` et `password` dans `config.local.yaml` (les deux sont fusionnées au chargement). Les réglages propres à cet outil (`list_path`, `max_pages`, `request_delay_seconds`, dossiers, `open_output`) restent dans la section `pedro_shitsumons` de `config.yaml`.
+- **Liste** : parcours de `/qa/list/1/?page=N` (N = 1.. `pedro_shitsumons.max_pages`). Chaque message est un `ul.list--qa > li` ; les messages "NEW" ont la classe `new`. Le parcours s'arrête à la première page contenant un message non-NEW. Date, auteur (`From xxxさん`) et texte de la question sont lus dans la liste (lisible sans être connecté).
+- **Connexion** : les pages détail (`/qa/detail/<id>/`) redirigent vers `https://secure.plusmember.jp/pedro/1/login/?url=...` si non connecté. Le script ouvre la première page détail, soumet le formulaire de login (`form[id]`, `form[pass]`) avec `pedro_education_club.login` / `pedro_education_club.password` lus dans `config.local.yaml` (section partagée, réutilisable par d'autres scripts visant le même site), puis vérifie qu'il n'est plus redirigé vers le login (sinon erreur explicite).
+- **Détail** : question = `p.tit--q` (sans son libellé `QUESTION`), réponse = `div.block__answer div.txt` (bloc `ANSWER`) ; à défaut (changement de mise en page), conteneur du libellé `ANSWER`. La question de la page détail remplace celle de la liste si elle est plus longue. `--debug-html` sauvegarde les pages détail brutes dans `temp/pedro_shitsumons/html/` pour diagnostiquer un changement de structure du site.
+- **Traduction** : via `TranslatorFactory` (service/langues de `translation.*`, `--target-lang` pour surcharger), avec un prompt dédié `pedro_shitsumons_system_prompt` de `config.prompt.yaml` (à la place de `system_prompt`/`system_prompt_extended`, spécifiques aux sous-titres). Les retours à la ligne sont encodés en `<br>` pour que chaque question/réponse reste une seule ligne (alignement 1:1 des batchs OpenAI), puis restaurés. Cache des traductions par id de message (`temp/pedro_shitsumons/translation_cache.json`) : un message déjà traduit (même texte, même langue cible) n'est pas retraduit lors d'un run suivant.
+- **Sortie** : un fichier Markdown `output/pedro_shitsumons/pedro_shitsumons_<AAAA-MM-JJ_HHMMSS>.md` (UTF-8) listant pour chaque message : date, auteur, URL, question et réponse traduites, puis l'original (bloc repliable). Le fichier est ouvert automatiquement à la fin (`pedro_shitsumons.open_output`, désactivable via `--no-open`).
+- **Progression** : pendant la lecture des pages détail, barre de progression sur une ligne dans la console (`Messages [####....] 12/80 (15%) ~01:05 restant`) ; hors console (sortie redirigée), une ligne de log par message. La traduction affiche une ligne par batch OpenAI ; les logs HTTP de `httpx` sont masqués.
+- Options : `--max-pages N`, `--target-lang xx`, `--dest <dossier>`, `--no-translate` (extraction seule), `--no-open`, `--debug-html`.
+- Code de sortie ≠ 0 (et `pause` du `.bat`) si login manquant/échoué ou si une traduction a échoué.
+
 ---
 
 ## 4. Outils techniques utilisés
@@ -470,6 +486,7 @@ Structure (sections principales) :
 
 - Même structure que `config.yaml`, fusionné par-dessus (deep merge) au chargement.
 - Contient les clés API réelles (`translation.api_keys.deepl`, `translation.api_keys.openai`).
+- Contient aussi les identifiants du fan club PEDRO pour `spo_pedro_shitsumons.bat` (section `pedro_education_club` : `login`, `password`, §3.12 — nom générique pour être réutilisée par d'autres scripts du même site).
 - Alternative : variables d'environnement `DEEPL_API_KEY`, `OPENAI_API_KEY`.
 
 ### 6.3 `config.prompt.yaml` (suivi par Git — pas un secret, mais modifié souvent)
@@ -604,6 +621,7 @@ Découpage en modules indépendants, chacun testable isolément :
 | `translation` | Interface commune + implémentations DeepL / OpenAI, gestion des prompts, retry/backoff |
 | `subtitles` | Construction des cues et écriture du `.srt` |
 | `config` | Chargement/fusion `config.yaml` + `config.local.yaml` + `config.prompt.yaml`, valeurs par défaut |
+| `pedro_shitsumons` | Outil annexe §3.12 : login + scraping du Q&A sp.pedro.tokyo (messages NEW), traduction via `translation`, écriture Markdown |
 
 Aucun module de doublage/TTS ni de réencodage vidéo n'est prévu dans cette architecture.
 
@@ -633,6 +651,8 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 ---
 
 ## 11. Historique des décisions
+
+- **[Cette version]** Ajout de l'outil annexe `spo_pedro_shitsumons.bat` / `pedro_shitsumons.py` (§3.12) : extraction des messages "NEW" du Q&A du fan club PEDRO (sp.pedro.tokyo, login via `config.local.yaml`, User-Agent mobile) et traduction question + ANSWER via `translator.py` avec un prompt dédié `pedro_shitsumons_system_prompt` ; sortie Markdown dans `output/pedro_shitsumons/`. Ajout de `beautifulsoup4` aux dépendances et d'une section `pedro_shitsumons` dans `config.yaml`.
 
 - **[Cette version]** Ajout de la clé optionnelle `saved_prompts` dans `config.prompt.yaml` : bibliothèque de prompts `system_prompt_extended` archivés (non lue par le code), pour permettre de conserver et réutiliser plus tard les prompts d'anciens projets sans les perdre ni les confondre avec le prompt actif.
 - **[Cette version]** Correction bug : avec le fournisseur OpenAI, quand le modèle ne renvoyait pas exactement une ligne par segment du batch (fusion de segments courts/fragmentés), les segments en trop retombaient silencieusement sur le texte source non traduit dans le `.srt` final. Le batch concerné est maintenant retraduit segment par segment avec un warning loggé.
@@ -671,3 +691,5 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Lorsque plusieurs chapitres sont sélectionnés (`--chapters`/`--autoselectchapters`), les sous-titres de chaque chapitre sont désormais **fusionnés en un unique fichier `.srt`** au lieu de produire un fichier séparé par chapitre (`_chN`). Extraction de la logique de transcription/traduction dans `_translate_range` (retourne des `SubtitleCue` sans écrire de fichier), réutilisée par `_translate_and_write` (cas mono-fichier) et par la boucle de sélection de chapitres dans `main()` (concatène puis renumérote les cues avant un unique `write_srt`).
 - **[Cette version]** Correction bug : les bookmarklets (§2.2) ne reconnaissaient que les URL YouTube et affichaient "Aucun ID vidéo YouTube trouvé dans cette page." sur une page de tweet X/Twitter, alors que ce type de source est supporté par le pipeline (§3.1) depuis son ajout — support jamais répercuté dans les bookmarklets. Fix : les bookmarklets reconnaissent désormais aussi les pages `x.com`/`twitter.com` `/status/<id>` et transmettent l'URL complète encodée (`spodl:`/`spotr:` + `encodeURIComponent(location.href)`) plutôt qu'un ID ; `spo-protocol-handler.ps1` (`ConvertTo-YouTubeUrl`) décode désormais la valeur reçue avant de vérifier si c'est déjà une URL complète.
 - **[Cette version]** Ajout de la sauvegarde de la transcription originale (langue source) à côté du `.srt` traduit, au format `<base>.<langue_source>.bak` (§3.8), pour conserver le texte source sans avoir à retranscrire. `_translate_range` retourne désormais `(cues, original_cues)` ; nouvelle fonction `_write_original_backup` (main.py), appelée par `_translate_and_write` et par la boucle de sélection de chapitres (backup fusionné, comme le `.srt`). Tests dans `tests/unit/test_resume.py`.
+- **[Cette version]** Renommage de la section des identifiants du fan club PEDRO dans `config.local.yaml` : `pedro_shitsumons` → `pedro_education_club` (nom générique, réutilisable par de futurs scripts visant le même site). Les autres réglages de l'outil restent sous `pedro_shitsumons` dans `config.yaml`.
+- **[Cette version]** Extraction de `base_url` et `user_agent` de la section `pedro_shitsumons` de `config.yaml` vers une nouvelle section `pedro_education_club` (même nom que celle des identifiants dans `config.local.yaml`), commune aux futurs scripts visant le site du fan club PEDRO.
