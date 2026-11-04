@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -661,6 +662,7 @@ class VideoDownloader:
 
             cmd = [
                 self.ffmpeg_path, "-y",
+                "-nostats", "-loglevel", "error",
                 "-protocol_whitelist", "file,http,https,tcp,tls,crypto",
                 "-i", url,
                 "-c", "copy",
@@ -671,10 +673,12 @@ class VideoDownloader:
 
             progress_display = _ProgressDisplay(self.logger)
 
+            # stderr goes to a temp file: an unread PIPE fills up (ffmpeg logs every HLS segment) and deadlocks ffmpeg
+            stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=stderr_file,
                 text=True,
                 encoding="utf-8",
                 bufsize=1  # Line buffered
@@ -717,7 +721,8 @@ class VideoDownloader:
                 progress_display.finish()
 
                 if proc.returncode != 0:
-                    stderr_output = proc.stderr.read() if proc.stderr else ""
+                    stderr_file.seek(0)
+                    stderr_output = stderr_file.read()
                     return DownloadResult(success=False, error=f"ffmpeg failed: {stderr_output[-2000:]}")
 
                 return DownloadResult(success=True, video_path=str(dest), title=base)
@@ -725,6 +730,7 @@ class VideoDownloader:
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait()
+                stderr_file.close()
 
         except FileNotFoundError:
             return DownloadResult(success=False, error=f"ffmpeg not found. Configure video.ffmpeg_path or add ffmpeg to PATH: {self.ffmpeg_path}")
