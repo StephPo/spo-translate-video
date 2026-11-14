@@ -72,6 +72,30 @@ pedro_shitsumons_system_prompt: >
     with the same numbering, and nothing else (no explanations, no quotes).
 
 # --------------------------------------------------------------------------
+# Prompt used ONLY by spo-pedro-fanstream.bat / pedro_fanstream.py (SPECIFICATIONS.md section 3.13),
+# instead of system_prompt_extended above (system_prompt still applies). Selected via
+# pedro_fanstream.prompt_key in config.yaml (main.py --prompt-key).
+# --------------------------------------------------------------------------
+pedro_fanstream_prompt_extended: >
+  Context: this is a live stream ("生配信") from the official fan club of PEDRO, a Japanese
+  rock band. The speaker is almost always Ayuni D (vocals/bass, formerly of BiSH), alone,
+  talking casually to her fans: recent news, tour and recording stories, everyday life.
+  Throughout the stream she reads fans' chat messages and questions aloud, then reacts to
+  them or answers them.
+
+  Rules specific to this stream:
+  - Keep Ayuni D's casual, spontaneous and playful tone; she speaks to fans like friends.
+    Do not make her sound formal.
+  - Recurring names to keep consistent: PEDRO, Ayuni D (アユニ・D), BiSH; band support
+    members, staff and song/album/tour titles stay in their usual romanized/English form
+    (do not translate song titles).
+  - Fan-club vocabulary: "生配信" = live stream, "アーカイブ" = replay, "ファンクラブ"/"FC" =
+    fan club, "ライブ" = concert (not "live" in the generic sense), "ツアー" = tour.
+  - Greetings and sign-offs ("こんばんは", "またね", "ばいばい") are translated naturally.
+  - Short reactions while reading the chat ("え〜", "なるほど", "ありがとう") are translated
+    only when they carry meaning; otherwise drop them per the general rules.
+
+# --------------------------------------------------------------------------
 # Saved prompts (inactive — reference library only, see note at top of file)
 # --------------------------------------------------------------------------
 # saved_prompts:

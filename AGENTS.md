@@ -1,4 +1,4 @@
-# Instructions pour l'agent (Devin)
+# Instructions pour l'agent IA (Devin, Claude, ...)
 
 ## Règle principale : SPECIFICATIONS.md est la source de vérité
 

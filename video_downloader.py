@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -190,14 +191,15 @@ class VideoDownloader:
     # next; retrying once with additional clients within the same run meaningfully improves odds.
     FALLBACK_PLAYER_CLIENTS = ["default", "tv", "ios", "web_safari", "mweb"]
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], download_dir: Optional[str] = None):
         self.config = config
         self.logger = logging.getLogger(__name__)
         video_cfg = config.get("video", {}) or {}
         output_cfg = config.get("output", {}) or {}
 
         self.temp_dir = Path(video_cfg.get("temp_directory", "./temp"))
-        self.download_dir = Path(output_cfg.get("video_download_directory") or output_cfg.get("output_directory") or "./output")
+        # download_dir (from --dest) overrides output.video_download_directory for this run
+        self.download_dir = Path(download_dir or output_cfg.get("video_download_directory") or output_cfg.get("output_directory") or "./output")
         self.ffmpeg_path = str(video_cfg.get("ffmpeg_path") or "ffmpeg")
 
         # yt-dlp's cross-run cache (under the user's default cache directory) can end up holding a
@@ -654,11 +656,19 @@ class VideoDownloader:
         src_path.unlink(missing_ok=True)
         return dest_path
 
-    def download_from_m3u8(self, url: str) -> DownloadResult:
-        """Remux an .m3u8 (HLS) URL directly into an .mp4 file via ffmpeg (stream copy, no re-encoding)."""
+    def download_from_m3u8(self, url: str, basename: Optional[str] = None) -> DownloadResult:
+        """Remux an .m3u8 (HLS) URL into an .mp4 file via ffmpeg (stream copy, no re-encoding).
+
+        The file is first written to the local temp directory, then moved to the download
+        directory: a long HLS remux never writes directly to a (possibly network) destination.
+        """
+        work_path: Optional[Path] = None
         try:
-            base = self._sanitize_filename(self._name_from_url(url)) or "hls_video"
+            base = self._sanitize_filename(basename or self._name_from_url(url)) or "hls_video"
             dest = self.download_dir / f"{base}.mp4"
+            work_dir = self.temp_dir / "m3u8_downloads"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            work_path = work_dir / f"{base}.mp4"
 
             cmd = [
                 self.ffmpeg_path, "-y",
@@ -667,9 +677,9 @@ class VideoDownloader:
                 "-i", url,
                 "-c", "copy",
                 "-progress", "pipe:1",
-                str(dest),
+                str(work_path),
             ]
-            self.logger.info(f"Downloading m3u8 via ffmpeg -> {dest}")
+            self.logger.info(f"Downloading m3u8 via ffmpeg -> {work_path} (then moved to {dest})")
 
             progress_display = _ProgressDisplay(self.logger)
 
@@ -725,6 +735,10 @@ class VideoDownloader:
                     stderr_output = stderr_file.read()
                     return DownloadResult(success=False, error=f"ffmpeg failed: {stderr_output[-2000:]}")
 
+                self.logger.info(f"Moving downloaded video to {dest}")
+                dest.unlink(missing_ok=True)
+                shutil.move(str(work_path), str(dest))
+                work_path = None
                 return DownloadResult(success=True, video_path=str(dest), title=base)
             finally:
                 if proc.poll() is None:
@@ -737,6 +751,9 @@ class VideoDownloader:
         except Exception as e:
             self.logger.error(f"Error downloading from m3u8: {e}")
             return DownloadResult(success=False, error=str(e))
+        finally:
+            if work_path is not None:
+                work_path.unlink(missing_ok=True)
 
     @staticmethod
     def _name_from_url(url: str) -> str:

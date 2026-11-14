@@ -174,7 +174,9 @@ Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieur
 | `input` | — | URL YouTube, URL `.m3u8`, ou chemin de fichier local (positionnel, obligatoire) |
 | `--config` | — | Chemin vers `config.yaml` (défaut : `config.yaml`) |
 | `--config-local` | — | Chemin vers l'override local de secrets (défaut : `config.local.yaml`) |
-| `--dest` | — | Dossier de destination (override pour ce run) |
+| `--dest` | — | Dossier de destination pour ce run : vidéo téléchargée (YouTube/m3u8, au lieu de `output.video_download_directory`) **et** sous-titres |
+| `--output-basename` | — | Impose le nom de base (sans extension) de la vidéo téléchargée, et donc du `.srt`/`.bak`. Utilisé par `spo-pedro-fanstream.bat` (§3.13) |
+| `--prompt-key` | — | Utilise la clé indiquée de `config.prompt.yaml` à la place de `system_prompt_extended` pour ce run (§5.3). Erreur si la clé est absente ou vide |
 | `--source-lang` | — | Override de la langue source (transcription) |
 | `--target-lang` | — | Override de la langue cible (traduction) |
 | `--info` | — | Télécharge/prépare puis affiche des infos, sans transcrire/traduire |
@@ -185,7 +187,7 @@ Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieur
 | `--listchapters` | `--lc` | Liste les chapitres et leur statut de correspondance, sans traiter. **Prévisualise toujours l'auto-sélection** (motifs `chapter_autoselect_patterns`), même sans `--autoselectchapters` — permet de vérifier rapidement ses regex sur une vidéo donnée. Une sélection manuelle `--chapters` fournie en même temps reste combinée (union) comme d'habitude |
 | `--resume` | — | Reprend un run précédent en évitant de refaire les phases déjà terminées avec succès : ne retélécharge pas si le téléchargement avait déjà réussi, ne retranscrit pas si une transcription était déjà en cache, et continue la traduction à partir du dernier segment traduit |
 
-> Options retirées volontairement par rapport à la version précédente : `--source-type` (détection auto systématique), `--output-basename` (le nom par défaut basé sur le titre/fichier source convient), `--no-progress` (l'affichage de progression est toujours utile, jugé non gênant).
+> Options retirées volontairement par rapport à la version précédente : `--source-type` (détection auto systématique), `--no-progress` (l'affichage de progression est toujours utile, jugé non gênant). `--output-basename` avait été retirée puis a été réintroduite pour les outils qui imposent leur propre nommage (§3.13).
 
 ### 3.3 Téléchargement (YouTube / m3u8)
 
@@ -211,7 +213,7 @@ Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieur
   - Gestion du **runtime JavaScript requis par YouTube** pour résoudre les défis d'extraction (voir §4).
   - Gestion des **composants distants de contournement** (`remote_components`, ex. `ejs:github`).
   - Détection et avertissement explicite si yt-dlp signale l'absence de runtime JS ou un échec de résolution de challenge (signature/n-challenge).
-- **`.m3u8`** : téléchargement/remux direct via `ffmpeg` (pas de transcodage, copie des flux) vers un `.mp4`. Une barre de progression est affichée pendant le téléchargement.
+- **`.m3u8`** : téléchargement/remux direct via `ffmpeg` (pas de transcodage, copie des flux) vers un `.mp4`. Une barre de progression est affichée pendant le téléchargement. Le fichier est d'abord écrit dans le dossier temporaire local (`<video.temp_directory>/m3u8_downloads/`), puis **déplacé** vers le dossier de destination une fois le remux terminé (un long remux HLS n'écrit jamais directement sur une destination potentiellement réseau ; le fichier partiel est supprimé en cas d'échec). Nom : `--output-basename` s'il est fourni, sinon le nom du fichier `.m3u8` de l'URL.
 - **Fichier local** : utilisé tel quel, aucun téléchargement.
 - **Barre de progression** : pendant le téléchargement (YouTube via yt-dlp ou m3u8 via ffmpeg), une barre de progression est affichée en temps réel pour montrer l'avancement du téléchargement (pourcentage, taille téléchargée, vitesse, temps restant estimé).
 
@@ -233,12 +235,21 @@ Un tweet peut contenir plusieurs vidéos exploitables par yt-dlp : soit plusieur
 
 ### 3.6 Transcription (Whisper)
 
-- Moteur : `openai-whisper` (local, pas d'API payante), avec `torch` pour l'inférence.
-- Modèle configurable (`tiny` à `large`, y compris `turbo`).
-- Accélération GPU optionnelle (CUDA), avec repli CPU automatique si indisponible.
+- Moteur : `faster-whisper` (réimplémentation de Whisper sur CTranslate2 ; local, pas d'API payante). Mêmes modèles et même qualité qu'`openai-whisper` (utilisé auparavant), mais environ 4 fois plus rapide et beaucoup moins gourmand en mémoire, sans dépendre de `torch`. Choix motivé par la lenteur de la transcription, surtout sur les PC portables sans GPU.
+- Modèle configurable (`whisper_model`) : `tiny`, `base`, `small`, `medium`, `large-v3` (`large` = `large-v3`), `turbo` (large-v3-turbo, ~8x plus rapide que `large-v3` au décodage, qualité proche), `distil-large-v3`, ou n'importe quel identifiant de dépôt Hugging Face au format CTranslate2 (ex. `kotoba-tech/kotoba-whisper-v2.0-faster`, version allégée de large-v3 spécialisée pour le japonais). Le modèle est téléchargé au premier usage dans le cache Hugging Face de l'utilisateur.
+- **Choix du matériel** (`advanced.gpu_acceleration`) : `"auto"` (défaut) utilise le GPU NVIDIA (CUDA) s'il est disponible et fonctionnel, sinon le CPU ; `true` demande le GPU (repli CPU avec avertissement s'il est indisponible) ; `false` force le CPU. Le GPU est validé au chargement par un décodage d'1 s de silence : si les bibliothèques CUDA (cuBLAS 12, cuDNN 9) sont absentes ou incompatibles, le programme repasse sur le CPU avec un avertissement au lieu d'échouer en pleine transcription. Les bibliothèques CUDA sont fournies par les paquets pip `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` (`requirements-gpu.txt`), dont les dossiers `bin` sont ajoutés au chemin de recherche des DLL au chargement du modèle.
+- **Type de calcul** (`compute_type`) : `"auto"` (défaut) = `float16` sur GPU, `int8` sur CPU (quantification 8 bits : le gros gain sur les PC portables, perte de qualité négligeable). Toute valeur CTranslate2 est acceptée (`float32`, `int8_float16`, ...).
+- **Threads CPU** (`cpu_threads`) : `0` (défaut) = la moitié des processeurs logiques (≈ nombre de cœurs physiques), au lieu des 4 threads par défaut de CTranslate2.
+- **Filtre de silence** (`vad_filter: false` par défaut) : le détecteur d'activité vocale Silero intégré à faster-whisper peut retirer les plages sans parole (silence, musique seule) avant le décodage, ce qui fait gagner du temps sur les vidéos qui en contiennent beaucoup. Désactivé par défaut : il risque d'écarter de la parole sur fond musical, et aucune perte de parole n'est acceptée. Les horodatages restent ceux de l'audio d'origine. La passe de rattrapage (ci-dessous) décode toujours sans ce filtre.
+- **Taille du faisceau** (`beam_size: 1` par défaut = décodage glouton, comme l'appel `openai-whisper` utilisé auparavant) : `5` améliore légèrement la qualité mais ralentit le décodage.
+- **Horodatage par mot** (`word_timestamps: true` par défaut) : affine le début/la fin des segments (alignement mot à mot) ; peut être désactivé sur une machine lente.
+- L'audio est décodé par `ffmpeg` (16 kHz mono, float32) puis passé en mémoire à faster-whisper, plutôt que de laisser faster-whisper le décoder via PyAV (dont les versions récentes ne sont pas compatibles avec faster-whisper 1.2).
 - Horodatage par segment (`start`, `end`, texte).
-- Filtrage par seuil de confiance heuristique : Whisper ne fournit pas de score de confiance calibré unique (0-1), mais expose par segment `avg_logprob` (log-probabilité moyenne du décodage) et `no_speech_prob` (probabilité d'absence de parole, utile contre les hallucinations sur silence/bruit) ; l'heuristique combine ces deux signaux natifs avec la longueur du texte et la proportion de caractères spéciaux.
+- Filtrage par seuil de confiance heuristique : Whisper ne fournit pas de score de confiance calibré unique (0-1), mais expose par segment `avg_logprob` (log-probabilité moyenne du décodage) et `no_speech_prob` (probabilité d'absence de parole, utile contre les hallucinations sur silence/bruit) ; l'heuristique combine ces deux signaux natifs avec la longueur du texte et la proportion de caractères spéciaux. La pénalité `no_speech_prob` est **pondérée par l'incertitude du décodage** (pleine à `avg_logprob` ≤ -0.5, nulle à `avg_logprob` = 0), sur le modèle de la règle de silence de Whisper (`no_speech_prob` élevé **et** `avg_logprob` bas) : de la vraie parole sur fond musical ou à voix basse a souvent `no_speech_prob` = 0.7–0.9 tout en étant décodée avec certitude, et ne doit pas être écartée.
 - Longueur de segment maximale configurable.
+- **Pas de conditionnement sur le texte précédent par défaut** (`condition_on_previous_text: false`, configurable) : avec le comportement par défaut de Whisper (`true`), le texte de la fenêtre de 30 s précédente sert de contexte à la suivante, ce qui fait régulièrement partir le décodeur en boucle de répétition sur les vidéos longues. Toute la fenêtre est alors dégradée (repli en haute température, `avg_logprob` très bas) et environ 30 s de parole sont perdues d'un bloc, toutes les 5 à 10 min.
+- **Passe de rattrapage des zones écartées** (`recover_dropped_regions: true` par défaut) : les signaux de qualité de Whisper étant calculés **par fenêtre de décodage de 30 s**, une fenêtre ratée fait écarter tous ses segments ensemble par le filtre de confiance. Après la passe principale, chaque zone contiguë de segments non vides écartés est re-transcrite **isolément** (`clip_timestamps`, bornée par les segments conservés qui l'entourent, ±1 s), avec un contexte vierge. Les segments obtenus qui passent le seuil de confiance sont réinsérés (tri par horodatage).
+- **Traçabilité** : chaque segment écarté est journalisé (horodatage, confiance, `avg_logprob`, `no_speech_prob`, température, texte), ainsi que les segments récupérés ou encore écartés par la passe de rattrapage et un bilan final. Ces lignes contiennent du texte en langue source : la sortie console est configurée pour ne jamais échouer sur un caractère non encodable (remplacement).
 
 ### 3.7 Traduction
 
@@ -304,6 +315,19 @@ Outil **spécifique au site du fan club PEDRO** (`https://sp.pedro.tokyo/qa/list
 - Options : `--max-pages N`, `--target-lang xx`, `--dest <dossier>`, `--no-translate` (extraction seule), `--no-open`, `--debug-html`.
 - Code de sortie ≠ 0 (et `pause` du `.bat`) si login manquant/échoué ou si une traduction a échoué.
 
+### 3.13 Outil annexe : live du fan club PEDRO (`spo-pedro-fanstream.bat`)
+
+Outil **spécifique au site du fan club PEDRO** : prend le dernier live (« 生配信アーカイブ ») de la section MOVIES et le passe dans le pipeline vidéo standard (téléchargement + transcription + traduction). Réutilise le même venv, la même config, la connexion de `pedro_shitsumons.py` (§3.12, classe `PedroSite`, section partagée `pedro_education_club`) et `main.py` tel quel.
+
+- Point d'entrée : `spo-pedro-fanstream.bat [options]` → `pedro_fanstream.py` (`.bat` calqué sur celui de §3.12).
+- **Liste** : `pedro_fanstream.list_path` (`/movies/list/5/0/`, lisible sans être connecté, User-Agent mobile). Chaque vidéo est un `ul.list--contents > li` : lien `/movies/detail/<id>`, `p.date` (date de publication `AAAA.MM.JJ`), `p.tit` (titre). La liste mélange lives FC, concerts et making-of : l'outil prend **automatiquement la première (= plus récente) vidéo dont le titre correspond à `pedro_fanstream.title_pattern`** (regex, `生配信` par défaut), sur la première page de la liste. Pas de choix interactif.
+- **Nom de sortie** : `pedro_fanstream.filename_template` (`"{date} FC stream"`), `{date}` = **date de publication** de la liste au format `AAAAMMJJ` (ex. `20261103 FC stream.mp4`, `20261103 FC stream.fr.srt`, `20261103 FC stream.ja.bak`) — et non la date éventuellement présente dans le titre.
+- **Destination** : `pedro_fanstream.output_directory` (`Z:\PEDRO\FC Stream`, lecteur réseau), surchargeable par `--dest`. Avant le téléchargement, l'outil vérifie que le dossier est accessible en écriture (création + fichier test) ; sinon erreur explicite (lecteur réseau déconnecté, ou console administrateur qui ne voit pas les lecteurs mappés → utiliser un chemin UNC). Si `<nom>.mp4` existe déjà dans la destination : message « déjà traité » et sortie 0, sauf `--force` (ou `--resume`).
+- **Connexion** : comme §3.12, via la page détail de la vidéo (`/movies/detail/<id>`), qui redirige vers le login plusmember si non connecté.
+- **Flux** : la page détail contient un lecteur video.js dont la source est `<source src="/movies/detail/play/<id>" type="application/x-mpegURL">` (à défaut : première URL `.m3u8` trouvée dans la page). Cette URL (session connectée requise) renvoie une playlist HLS maître ; l'outil choisit la variante de **plus haute résolution, puis plus haut débit** (`#EXT-X-STREAM-INF`, `RESOLUTION`/`BANDWIDTH`) et logue les qualités disponibles et celle retenue. Les variantes (CloudFront) et leurs segments sont accessibles sans cookie : l'URL de la variante est passée telle quelle au pipeline.
+- **Pipeline** : lancement de `main.py <variante.m3u8> --dest <destination> --output-basename "<nom>" --prompt-key <pedro_fanstream.prompt_key>` dans un sous-process (même interpréteur), dont le code retour est propagé. Le prompt dédié `pedro_fanstream_prompt_extended` (`config.prompt.yaml`) remplace `system_prompt_extended` pour ce run (`system_prompt` général toujours appliqué).
+- Options : `--dry-run` (trouve la vidéo, se connecte, résout le flux et affiche la commande du pipeline sans la lancer), `--force`, `--resume` et `--download-only` (relayés à `main.py`), `--dest`, `--debug-html` (sauvegarde la page détail brute dans `temp/pedro_fanstream/`).
+
 ---
 
 ## 4. Outils techniques utilisés
@@ -313,7 +337,7 @@ Outil **spécifique au site du fan club PEDRO** (`https://sp.pedro.tokyo/qa/list
 | **Python 3.10+** | Langage d'implémentation | Runtime |
 | **yt-dlp** | Téléchargement YouTube | Bibliothèque Python (PyPI) |
 | **ffmpeg / ffprobe** | Extraction audio, remux `.m3u8`, inspection média | Binaire externe (PATH) |
-| **openai-whisper** + **torch** | Transcription audio → texte | Bibliothèque Python (modèle exécuté localement) |
+| **faster-whisper** (CTranslate2) | Transcription audio → texte | Bibliothèque Python (modèle exécuté localement) ; sur GPU NVIDIA, `nvidia-cublas-cu12` + `nvidia-cudnn-cu12` (`requirements-gpu.txt`) |
 | **PyYAML** | Lecture de `config.yaml` | Bibliothèque Python |
 | **requests** | Appels HTTP (DeepL) | Bibliothèque Python |
 | **openai** (SDK officiel) | Appels à l'API OpenAI | Bibliothèque Python |
@@ -391,6 +415,10 @@ Trois champs, tous supportant les *placeholders* suivants (remplis automatiqueme
 | `system_prompt` | Instructions **générales et stables**, valables pour tous les projets. Défini une fois, rarement modifié. | `config.prompt.yaml` |
 | `system_prompt_extended` | Instructions **spécifiques au run/à la série/au streamer en cours**, à personnaliser librement à chaque projet de traduction (contexte du contenu, ton particulier, glossaire, façon de gérer le chat, etc.). Concaténé après `system_prompt`. Modifié fréquemment. | `config.prompt.yaml` |
 | `user_prompt_template` | Gabarit du message utilisateur envoyé au modèle (par défaut `"{text}"`, généralement à ne pas modifier). | `config.yaml` (reste avec les autres réglages techniques d'OpenAI, car il n'est quasiment jamais modifié) |
+
+#### Prompt actif imposé par run (`--prompt-key`)
+
+`main.py --prompt-key <clé>` remplace, pour ce run uniquement, `system_prompt_extended` par la valeur de la clé `<clé>` de `config.prompt.yaml` (clé de premier niveau, ex. `pedro_fanstream_prompt_extended` utilisée par §3.13). Permet à un outil dédié d'avoir son propre prompt sans toucher au prompt actif de l'utilisateur.
 
 #### Bibliothèque de prompts sauvegardés (`saved_prompts`)
 
@@ -476,17 +504,18 @@ Structure (sections principales) :
 - `translation` — service actif, langues source/cible, retry, clés API (vides ici), `custom_prompts` (§5.3), options par fournisseur (`deepl.plan`, `openai.model`/`batch_size`).
 - `input` — type de source par défaut, formats locaux supportés.
 - `audio` — format d'extraction, sample rate, canaux, normalisation.
-- `speech_recognition` — moteur (`whisper`), modèle, seuil de confiance, longueur max de segment.
+- `speech_recognition` — moteur (`whisper`), modèle, `compute_type`, `cpu_threads`, `vad_filter`, `beam_size`, `word_timestamps`, seuil de confiance, longueur max de segment, `condition_on_previous_text` (défaut `false`) et `recover_dropped_regions` (défaut `true`), voir §3.6. Les réglages propres à une machine (ex. modèle plus léger sur un PC portable) se mettent dans `config.local.yaml`.
 - `video` — chemin ffmpeg, encodage (non utilisé pour la génération de sous-titres seule, conservé pour référence), dossier temporaire, `youtube_js_runtime`, `youtube_remote_components`, `youtube_player_clients` (voir §4.2).
 - `processing` — parallélisme, niveau de log, copie des logs dans un fichier (`log_to_file`/`log_file_path`, voir §3.11), patterns d'auto-sélection de chapitres, nettoyage des fichiers temporaires.
-- `advanced` — GPU, timeouts, retries génériques.
+- `pedro_education_club`, `pedro_shitsumons`, `pedro_fanstream` — outils annexes du fan club PEDRO (§3.12, §3.13).
+- `advanced` — GPU (`gpu_acceleration` : `"auto"`/`true`/`false`, `gpu_device`, voir §3.6), timeouts, retries génériques.
 - `quality_control` — validations optionnelles (longueur min/max de texte, durée min audio...).
 
 ### 6.2 `config.local.yaml` (ignoré par Git — secrets)
 
 - Même structure que `config.yaml`, fusionné par-dessus (deep merge) au chargement.
 - Contient les clés API réelles (`translation.api_keys.deepl`, `translation.api_keys.openai`).
-- Contient aussi les identifiants du fan club PEDRO pour `spo_pedro_shitsumons.bat` (section `pedro_education_club` : `login`, `password`, §3.12 — nom générique pour être réutilisée par d'autres scripts du même site).
+- Contient aussi les identifiants du fan club PEDRO pour `spo_pedro_shitsumons.bat` et `spo-pedro-fanstream.bat` (section `pedro_education_club` : `login`, `password`, §3.12/§3.13 — nom générique pour être réutilisée par d'autres scripts du même site).
 - Alternative : variables d'environnement `DEEPL_API_KEY`, `OPENAI_API_KEY`.
 
 ### 6.3 `config.prompt.yaml` (suivi par Git — pas un secret, mais modifié souvent)
@@ -531,8 +560,19 @@ copy config.prompt.example.yaml config.prompt.yaml
 
 Le premier lancement du `.bat` :
 - crée `.venv` ;
-- installe `requirements.txt` (télécharge notamment `torch` et `openai-whisper`, qui peuvent prendre plusieurs minutes) ;
+- installe `requirements.txt` (dont `faster-whisper`) ;
+- si un GPU NVIDIA est détecté (`nvidia-smi` présent), installe une fois `requirements-gpu.txt` (bibliothèques CUDA cuBLAS/cuDNN, ~1 Go, marqueur `.venv\gpu_deps_installed.marker`) ;
 - exécute la commande demandée.
+
+Sur un venv déjà existant (créé avant le passage à faster-whisper), `spo-translate-video.bat` et `spo-pedro-fanstream.bat` installent `faster-whisper` s'il manque. Le modèle Whisper est téléchargé au premier run (~3 Go pour `large-v3`, ~1,6 Go pour `turbo`).
+
+**PC portable / machine sans GPU NVIDIA** : mettre dans `config.local.yaml` un modèle plus léger, par exemple :
+
+```yaml
+speech_recognition:
+  whisper_model: "turbo"   # ou "kotoba-tech/kotoba-whisper-v2.0-faster" pour du japonais
+  word_timestamps: false
+```
 
 Ensuite, **`yt-dlp` spécifiquement est revérifié et mis à jour automatiquement au plus une fois tous les 7 jours** (indépendamment du reste des dépendances, figées après la première installation — voir §8) : YouTube change fréquemment ses protections, et une installation de `yt-dlp` figée plusieurs mois peut significativement dégrader la fiabilité des téléchargements.
 
@@ -570,7 +610,7 @@ Pour désinstaller :
 
 ```powershell
 .\.venv\Scripts\python.exe -m yt_dlp --version
-.\.venv\Scripts\python.exe -c "import whisper, torch; print(torch.cuda.is_available())"
+.\.venv\Scripts\python.exe -c "import faster_whisper, ctranslate2; print(ctranslate2.get_cuda_device_count())"
 ffmpeg -version
 node --version
 ```
@@ -582,8 +622,8 @@ node --version
 | Outil | Pourquoi le mettre à jour | Fréquence recommandée | Commande |
 |---|---|---|---|
 | **yt-dlp** | YouTube change fréquemment ses protections anti-bot ; les mainteneurs de yt-dlp publient des correctifs très rapidement | **Automatique** : `spo-translate-video.bat` revérifie et met à jour `yt-dlp` tout seul au plus une fois tous les 7 jours (marqueur `.venv\yt_dlp_last_update.marker`), en plus de l'installation initiale figée par `deps_installed.marker`. Forcer une vérification immédiate : supprimer `.venv\yt_dlp_last_update.marker` | `.\.venv\Scripts\python -m pip install --upgrade yt-dlp` puis vérifier avec `.\.venv\Scripts\python -m yt_dlp --version` |
-| **openai-whisper** | Corrections de bugs, nouveaux modèles | Occasionnel (peu de changements cassants) | `.\.venv\Scripts\python -m pip install --upgrade openai-whisper` |
-| **torch** | Rare, sauf changement de version CUDA ou de GPU | Seulement si nécessaire (peut être un gros téléchargement) | `.\.venv\Scripts\python -m pip install --upgrade torch` (vérifier compatibilité CUDA si GPU) |
+| **faster-whisper** / **ctranslate2** | Corrections de bugs, performances, nouveaux modèles | Occasionnel | `.\.venv\Scripts\python -m pip install --upgrade faster-whisper` |
+| **nvidia-cublas-cu12** / **nvidia-cudnn-cu12** (GPU NVIDIA seulement) | Rare : uniquement si une nouvelle version de `ctranslate2` exige une autre version de CUDA/cuDNN | Seulement si nécessaire (gros téléchargement) | `.\.venv\Scripts\python -m pip install --upgrade -r requirements-gpu.txt` |
 | **openai (SDK)** | Nouveaux modèles, corrections d'API | ~1x/mois ou en cas d'erreur d'API | `.\.venv\Scripts\python -m pip install --upgrade openai` |
 | **ffmpeg** | Corrections de bugs, nouveaux codecs | Occasionnel | `winget upgrade Gyan.FFmpeg` |
 | **Node.js** | Sécurité, compatibilité avec les scripts de résolution de challenge yt-dlp | Suivre les releases LTS | `winget upgrade OpenJS.NodeJS.LTS` |
@@ -600,6 +640,8 @@ node --version
 | `WARNING: [youtube] No supported JavaScript runtime could be found` | Node.js absent ou mal configuré | Installer Node.js LTS, vérifier `video.youtube_js_runtime` dans `config.yaml` |
 | Avertissement sur le "remote component challenge solver script" | `youtube_remote_components` désactivé | Activer `youtube_remote_components.enable: true` avec `components: ["ejs:github"]` |
 | `WARNING: ... Some <client> client https formats have been skipped as they are missing a URL. YouTube may have enabled the SABR-only streaming experiment...` / qualité téléchargée décevante malgré un avertissement absent ou correspondant | Rollout YouTube "SABR-only streaming" affectant le(s) client(s) de lecture utilisé(s) par yt-dlp pour cette vidéo (voir §4.2) | Configurer `video.youtube_player_clients` (ex. `["default", "tv"]`) et/ou mettre à jour yt-dlp (`pip install -U yt-dlp`) |
+| `GPU unavailable or not working ... falling back to CPU` dans le log, transcription lente | Bibliothèques CUDA absentes (`cublas64_12.dll`/`cudnn64_9.dll` introuvables) ou pilote NVIDIA trop ancien | `.\.venv\Scripts\python -m pip install -r requirements-gpu.txt`, mettre à jour le pilote NVIDIA |
+| Transcription très lente sur un PC portable | Modèle trop gros pour un CPU seul | Dans `config.local.yaml` : `speech_recognition.whisper_model: "turbo"` (ou `kotoba-tech/kotoba-whisper-v2.0-faster`), `word_timestamps: false`, PC sur secteur en mode « Performances » |
 | `HTTP 429 Too Many Requests` (DeepL/OpenAI) | Rate limiting de l'API | Le programme retry automatiquement avec backoff ; ajuster `translation.retry.*` si besoin |
 | La traduction s'arrête en plein milieu | Échec définitif après épuisement des retries (fail-fast volontaire) | Relancer avec `--resume` pour reprendre depuis le cache, sans refaire la transcription |
 | "Le fichier n'a pas de chapitres correspondants" | Regex `chapter_autoselect_patterns` ne matche rien, ou fichier sans chapitres embarqués | Utiliser `--listchapters` pour tester les patterns avant un run réel |
@@ -617,10 +659,11 @@ Découpage en modules indépendants, chacun testable isolément :
 | `main` (CLI/orchestrateur) | Parsing des arguments, chargement de config, orchestration du pipeline, logs, cache/resume, gestion des chapitres, overwrite |
 | `downloader` | Téléchargement YouTube (yt-dlp) et `.m3u8` (ffmpeg), détection de source, sélection de format/qualité |
 | `audio` | Extraction audio (ffmpeg), extraction de segments par plage temporelle |
-| `transcription` | Whisper : chargement du modèle, transcription, segmentation horodatée |
+| `transcription` | Whisper (faster-whisper) : choix GPU/CPU, chargement du modèle, transcription, segmentation horodatée |
 | `translation` | Interface commune + implémentations DeepL / OpenAI, gestion des prompts, retry/backoff |
 | `subtitles` | Construction des cues et écriture du `.srt` |
 | `config` | Chargement/fusion `config.yaml` + `config.local.yaml` + `config.prompt.yaml`, valeurs par défaut |
+| `pedro_fanstream` | Outil annexe §3.13 : dernier live de la section MOVIES de sp.pedro.tokyo → résolution du flux HLS en qualité max → `main.py` |
 | `pedro_shitsumons` | Outil annexe §3.12 : login + scraping du Q&A sp.pedro.tokyo (messages NEW), traduction via `translation`, écriture Markdown |
 
 Aucun module de doublage/TTS ni de réencodage vidéo n'est prévu dans cette architecture.
@@ -652,6 +695,7 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 
 ## 11. Historique des décisions
 
+- **[Cette version]** Ajout de l'outil annexe `spo-pedro-fanstream.bat` / `pedro_fanstream.py` (§3.13) : dernier live « 生配信 » de la section MOVIES du fan club PEDRO, flux HLS en qualité max, pipeline complet, sortie `<AAAAMMJJ> FC stream` dans `Z:\PEDRO\FC Stream` (section `pedro_fanstream` de `config.yaml`), prompt dédié `pedro_fanstream_prompt_extended`. Pour cela, `main.py` gagne `--output-basename` (réintroduite) et `--prompt-key`, `--dest` s'applique désormais aussi à la vidéo téléchargée, et le téléchargement m3u8 passe par le dossier temporaire local avant déplacement vers la destination.
 - **[Cette version]** Ajout de l'outil annexe `spo_pedro_shitsumons.bat` / `pedro_shitsumons.py` (§3.12) : extraction des messages "NEW" du Q&A du fan club PEDRO (sp.pedro.tokyo, login via `config.local.yaml`, User-Agent mobile) et traduction question + ANSWER via `translator.py` avec un prompt dédié `pedro_shitsumons_system_prompt` ; sortie Markdown dans `output/pedro_shitsumons/`. Ajout de `beautifulsoup4` aux dépendances et d'une section `pedro_shitsumons` dans `config.yaml`.
 
 - **[Cette version]** Ajout de la clé optionnelle `saved_prompts` dans `config.prompt.yaml` : bibliothèque de prompts `system_prompt_extended` archivés (non lue par le code), pour permettre de conserver et réutiliser plus tard les prompts d'anciens projets sans les perdre ni les confondre avec le prompt actif.
@@ -694,3 +738,5 @@ Les fixtures pytest correspondantes (`tests/conftest.py`) font un `pytest.skip()
 - **[Cette version]** Renommage de la section des identifiants du fan club PEDRO dans `config.local.yaml` : `pedro_shitsumons` → `pedro_education_club` (nom générique, réutilisable par de futurs scripts visant le même site). Les autres réglages de l'outil restent sous `pedro_shitsumons` dans `config.yaml`.
 - **[Cette version]** Extraction de `base_url` et `user_agent` de la section `pedro_shitsumons` de `config.yaml` vers une nouvelle section `pedro_education_club` (même nom que celle des identifiants dans `config.local.yaml`), commune aux futurs scripts visant le site du fan club PEDRO.
 - **[Cette version]** Correction bug : le téléchargement `.m3u8` (§3.1) pouvait se figer définitivement après quelques secondes (fichier de sortie qui ne grossit plus, progression bloquée, aucune erreur). Cause : `download_from_m3u8` redirigeait le stderr de ffmpeg vers un pipe jamais lu ; ffmpeg y journalise chaque segment HLS ouvert, le tampon du pipe se remplissait et ffmpeg restait bloqué en écriture. Fix : ffmpeg lancé avec `-nostats -loglevel error` et stderr redirigé vers un fichier temporaire (relu pour le message d'erreur en cas d'échec) ; la progression (`-progress pipe:1` sur stdout) est inchangée.
+- **[Cette version]** Correction bug : sur les vidéos longues, des passages de ~30 s de parole manquaient régulièrement dans la transcription (et donc dans les sous-titres). Deux causes : (1) une fenêtre de décodage Whisper partait en boucle (conditionnement sur le texte précédent) ; (2) le filtre de confiance pénalisait plein pot `no_speech_prob`, élevé sur de la parole correctement reconnue (fond musical). Le filtre étant appliqué à des scores par fenêtre, tous les segments de la fenêtre étaient écartés d'un bloc. Correctif (§3.6) : pénalité `no_speech_prob` pondérée par l'incertitude du décodage, `condition_on_previous_text: false` par défaut, passe de rattrapage re-transcrivant isolément les zones écartées (`recover_dropped_regions`), et journalisation des segments écartés/récupérés.
+- **[Cette version]** Passage du moteur de transcription d'`openai-whisper` (+ `torch`) à `faster-whisper` (CTranslate2), car la transcription était très lente, surtout sur PC portable : le modèle `large` tournait en float32 sur CPU (le `torch` installé était la version CPU, et `gpu_acceleration` valait `false`). Nouveau (§3.6) : `advanced.gpu_acceleration: "auto"` par défaut avec validation du GPU au chargement et repli CPU, `compute_type` (`float16` GPU / `int8` CPU), `cpu_threads`, `vad_filter` (Silero, défaut `false` pour ne prendre aucun risque de perte de parole sur fond musical), `beam_size` (défaut `1`), `word_timestamps` configurable. Bibliothèques CUDA via `requirements-gpu.txt`, installées automatiquement par les `.bat` si un GPU NVIDIA est détecté. Filtre de confiance et passe de rattrapage inchangés.

@@ -123,6 +123,16 @@ def load_config(config_path: str, config_local_path: str, prompt_path: str = "co
     return cfg
 
 
+def _apply_prompt_key(config: Dict[str, Any], prompt_key: str, prompt_path: str = "config.prompt.yaml") -> None:
+    """--prompt-key: replace system_prompt_extended by another top-level key of config.prompt.yaml."""
+    prompt_p = Path(prompt_path)
+    prompt_cfg = _load_yaml(str(prompt_p)) if prompt_p.exists() else {}
+    value = prompt_cfg.get(prompt_key)
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"--prompt-key: key '{prompt_key}' not found (or empty) in {prompt_path}")
+    config.setdefault("translation", {}).setdefault("custom_prompts", {})["system_prompt_extended"] = value
+
+
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
@@ -164,6 +174,12 @@ def _setup_logging(config: Dict[str, Any]) -> logging.Logger:
     log_level = processing_cfg.get("log_level", "INFO")
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+    # Log lines may contain source-language text (e.g. Japanese segments dropped/recovered by
+    # Whisper); never let a non-UTF-8 console (cp1252 when redirected) break logging over it.
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
     handlers: List[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     file_handler = None
     log_path: Optional[Path] = None
@@ -408,8 +424,13 @@ def _resolve_twitter_video_url(downloader: VideoDownloader, source: str, logger:
 def _prepare_input(
     source: str, config: Dict[str, Any], logger: logging.Logger,
     *, resume: bool = False, download_cache_path: Optional[Path] = None,
+    dest_dir: Optional[str] = None, output_basename: Optional[str] = None,
 ) -> Tuple[str, str, Optional[str], Optional[str]]:
-    """Return (video_path, title_for_output, quality_info, quality_warning)."""
+    """Return (video_path, title_for_output, quality_info, quality_warning).
+
+    dest_dir (--dest) overrides the download directory; output_basename (--output-basename)
+    forces the name of the downloaded video file (and therefore of the subtitles).
+    """
     source_type = detect_source_type(source)
     logger.info(f"Detected source type: {source_type}")
 
@@ -424,17 +445,27 @@ def _prepare_input(
             logger.info(f"Resuming: reusing previously downloaded video (skipping download): {cached_path}")
             return cached_path, cached.get("title") or Path(cached_path).stem, None, None
 
-    downloader = VideoDownloader(config)
+    downloader = VideoDownloader(config, download_dir=dest_dir)
     if source_type == "twitter":
         target_url, playlist_index = _resolve_twitter_video_url(downloader, source, logger)
         result = downloader.download_from_youtube(target_url, playlist_index=playlist_index)
     elif source_type == "youtube":
         result = downloader.download_from_youtube(source)
     else:
-        result = downloader.download_from_m3u8(source)
+        result = downloader.download_from_m3u8(source, basename=output_basename)
 
     if not result.success:
         raise RuntimeError(f"Download failed: {result.error}")
+
+    if output_basename:
+        current = Path(result.video_path)
+        wanted = current.with_name(VideoDownloader._sanitize_filename(output_basename) + current.suffix)
+        if current != wanted:
+            wanted.unlink(missing_ok=True)
+            current.rename(wanted)
+            logger.info(f"Renamed downloaded video to {wanted}")
+            result.video_path = str(wanted)
+        result.title = output_basename
 
     title = result.title or Path(result.video_path).stem
     if download_cache_path is not None:
@@ -555,7 +586,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--config-local", default="config.local.yaml", help="Path to local secrets override")
     parser.add_argument("--h", action="help", help="Show this help message and exit")
-    parser.add_argument("--dest", default=None, help="Override destination folder for this run")
+    parser.add_argument("--dest", default=None, help="Override destination folder for this run (downloaded video and subtitles)")
+    parser.add_argument("--output-basename", default=None, help="Force the base name of the downloaded video / subtitles (no extension)")
+    parser.add_argument("--prompt-key", default=None, help="Use this key of config.prompt.yaml instead of system_prompt_extended")
     parser.add_argument("--source-lang", default=None, help="Override source language (transcription), e.g. ja, en")
     parser.add_argument("--target-lang", default=None, help="Override target language, e.g. fr")
     parser.add_argument("--info", action="store_true", help="Download/prepare the input and print info, then exit")
@@ -578,6 +611,8 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config, args.config_local)
+    if args.prompt_key:
+        _apply_prompt_key(config, args.prompt_key)
     logger = _setup_logging(config)
     logger.info(f"Command: {_describe_invocation_command()}")
 
@@ -619,6 +654,7 @@ def main() -> int:
 
         video_path, title, quality_info, quality_warning = _prepare_input(
             args.input, config, logger, resume=args.resume, download_cache_path=download_cache_path,
+            dest_dir=args.dest, output_basename=args.output_basename,
         )
         if quality_info:
             print(_green(quality_info))

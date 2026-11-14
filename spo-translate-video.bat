@@ -53,6 +53,20 @@ if not exist ".venv\deps_installed.marker" (
   type nul > ".venv\deps_installed.marker"
 )
 
+REM faster-whisper replaced openai-whisper (SPECIFICATIONS.md section 3.6): bring venvs created before
+REM that change up to date, and add the CUDA libraries once on machines with an NVIDIA GPU.
+call ".venv\Scripts\python.exe" -c "import faster_whisper" >nul 2>nul
+if errorlevel 1 (
+  echo Installing faster-whisper...
+  call ".venv\Scripts\python.exe" -m pip install "faster-whisper>=1.1"
+)
+where nvidia-smi >nul 2>nul
+if not errorlevel 1 if not exist ".venv\gpu_deps_installed.marker" (
+  echo NVIDIA GPU detected: installing CUDA libraries for faster-whisper - one-time, about 1 GB...
+  call ".venv\Scripts\python.exe" -m pip install -r requirements-gpu.txt
+  if not errorlevel 1 type nul > ".venv\gpu_deps_installed.marker"
+)
+
 REM Periodically refresh yt-dlp: YouTube extraction breaks frequently, and yt-dlp ships fixes
 REM very often (see SPECIFICATIONS.md section 8) — an install pinned once via the marker above
 REM can silently fall many releases behind. Re-check for updates at most once every 7 days.

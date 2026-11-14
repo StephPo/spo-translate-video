@@ -259,7 +259,7 @@ def test_prepare_input_resume_redownloads_when_cached_file_missing(tmp_path, mon
     downloaded_path.write_bytes(b"data")
 
     class _FakeDownloader:
-        def __init__(self, config):
+        def __init__(self, config, download_dir=None):
             pass
 
         def download_from_youtube(self, url):
@@ -290,7 +290,7 @@ def test_prepare_input_without_resume_flag_always_downloads(tmp_path, monkeypatc
     called = {"count": 0}
 
     class _FakeDownloader:
-        def __init__(self, config):
+        def __init__(self, config, download_dir=None):
             pass
 
         def download_from_youtube(self, url):

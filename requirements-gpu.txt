@@ -1,0 +1,4 @@
+# CUDA libraries needed by faster-whisper / CTranslate2 on an NVIDIA GPU (SPECIFICATIONS.md section 3.6).
+# Installed automatically by the .bat launchers when nvidia-smi is found. ~1 GB download.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

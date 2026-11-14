@@ -47,6 +47,17 @@ Extracts every "NEW" message of https://sp.pedro.tokyo/qa/list/1/ with its ANSWE
 
 Details and options: `SPECIFICATIONS.md` section 3.12.
 
+## PEDRO fan club live stream (sp.pedro.tokyo/movies)
+
+Takes the latest "生配信" video of the MOVIES section, downloads it at the best available quality and runs the full subtitle pipeline with a dedicated prompt (`pedro_fanstream_prompt_extended` in `config.prompt.yaml`). Output: `<YYYYMMDD> FC stream.mp4` / `.fr.srt` in `pedro_fanstream.output_directory` (`Z:\PEDRO\FC Stream`). Same login as above.
+
+```powershell
+.\spo-pedro-fanstream.bat
+.\spo-pedro-fanstream.bat --dry-run   # only find the video/stream and print the pipeline command
+```
+
+Details and options: `SPECIFICATIONS.md` section 3.13.
+
 ## One-click from a YouTube page (Windows)
 
 ```powershell

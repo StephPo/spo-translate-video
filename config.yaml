@@ -39,10 +39,30 @@ translation:
 
 speech_recognition:
   engine: "whisper"
-  # tiny, base, small, medium, large, turbo
-  whisper_model: "large"
+  # faster-whisper model (SPECIFICATIONS.md section 3.6): tiny, base, small, medium, large-v3 (= large),
+  # turbo (much faster, close quality), distil-large-v3, or a Hugging Face CTranslate2 repo id, e.g.
+  # "kotoba-tech/kotoba-whisper-v2.0-faster" (fast, Japanese-specialised). On a laptop without NVIDIA GPU,
+  # override it in config.local.yaml (e.g. "turbo").
+  whisper_model: "large-v3"
+  # auto = float16 on GPU, int8 on CPU (8-bit: big speed-up on CPU, negligible quality loss)
+  compute_type: "auto"
+  # CPU threads; 0 = half the logical CPUs (~ physical cores)
+  cpu_threads: 0
+  # Skip silence / music-only stretches before decoding (Silero VAD): faster, but may drop speech
+  # over background music. Off by default (SPECIFICATIONS.md section 3.6).
+  vad_filter: false
+  # 1 = greedy (fastest); 5 = slightly better quality, slower
+  beam_size: 1
+  # Word-level alignment to refine segment start/end; false saves time on slow machines
+  word_timestamps: true
   max_segment_length: 45
   confidence_threshold: 0.2
+  # Feed the previous 30 s window's text as context to the next one (Whisper default: true).
+  # false avoids repetition loops on long videos that lose whole 30 s chunks of speech.
+  condition_on_previous_text: false
+  # Re-transcribe in isolation the regions whose segments were dropped (low confidence),
+  # to recover speech lost when a whole 30 s decoding window went wrong.
+  recover_dropped_regions: true
 
 audio:
   extraction_format: "wav"
@@ -106,6 +126,21 @@ pedro_shitsumons:
   # Open the generated .md file at the end
   open_output: true
 
+pedro_fanstream:
+  # spo-pedro-fanstream.bat / pedro_fanstream.py (SPECIFICATIONS.md section 3.13).
+  list_path: "/movies/list/5/0/"
+  # The latest movie whose title matches this regex is processed
+  title_pattern: "生配信"
+  # Network drive: must be reachable from the current Windows session (use a UNC path if needed)
+  output_directory: 'Z:\PEDRO\FC Stream'
+  # {date} = publication date in the movie list, AAAAMMJJ
+  filename_template: "{date} FC stream"
+  # Key of config.prompt.yaml used instead of system_prompt_extended
+  prompt_key: "pedro_fanstream_prompt_extended"
+  request_delay_seconds: 0.5
+
 advanced:
-  gpu_acceleration: false
+  # "auto" = NVIDIA GPU (CUDA) if available and working, else CPU; true = want GPU (CPU fallback
+  # with a warning); false = always CPU
+  gpu_acceleration: "auto"
   gpu_device: 0
