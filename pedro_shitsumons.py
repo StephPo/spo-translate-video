@@ -5,6 +5,7 @@ See SPECIFICATIONS.md section 3.12.
 """
 
 import argparse
+import html
 import json
 import logging
 import os
@@ -286,19 +287,61 @@ def translate_items(items: List[Dict[str, str]], config: Dict[str, Any], cache: 
 # Output
 # --------------------------------------------------------------------------
 
-def write_markdown(items: List[Dict[str, str]], path: Path, source_lang: str, target_lang: str) -> None:
+_HTML_CSS = """
+:root { color-scheme: light dark; --bg: #f7f7f5; --card: #fff; --fg: #1d1d1f; --muted: #6b6b70;
+  --border: #e2e2e0; --accent: #c2410c; }
+@media (prefers-color-scheme: dark) { :root { --bg: #161618; --card: #212124; --fg: #ececee;
+  --muted: #9a9aa0; --border: #34343a; --accent: #fb923c; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); line-height: 1.6;
+  font-family: system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.4rem; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 24px; font-size: .9rem; }
+article { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 18px 20px; margin-bottom: 18px; }
+article h2 { font-size: 1rem; margin: 0 0 2px; }
+.url { font-size: .82rem; word-break: break-all; }
+.url a { color: var(--muted); }
+h3 { font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; color: var(--accent);
+  margin: 16px 0 4px; }
+p.txt { margin: 0; white-space: pre-wrap; }
+.none { color: var(--muted); font-style: italic; }
+details { margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 10px; }
+summary { cursor: pointer; color: var(--muted); font-size: .88rem; }
+"""
+
+
+def _html_text(text: Optional[str]) -> str:
+    if not text:
+        return '<p class="txt none">(pas de réponse)</p>'
+    return f'<p class="txt">{html.escape(text)}</p>'
+
+
+def write_html(items: List[Dict[str, str]], path: Path, source_lang: str, target_lang: str) -> None:
     src, tgt = source_lang.upper(), target_lang.upper()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    lines = [f"# PEDRO SHITSUMONS — messages NEW ({len(items)}) — extrait le {now}", ""]
+    title = f"PEDRO SHITSUMONS — messages NEW ({len(items)})"
+    parts = ["<!doctype html>", '<html lang="fr"><head><meta charset="utf-8">',
+             '<meta name="viewport" content="width=device-width, initial-scale=1">',
+             f"<title>{html.escape(title)}</title><style>{_HTML_CSS}</style></head><body><main>",
+             f"<h1>{html.escape(title)}</h1>", f'<p class="sub">Extrait le {now}</p>']
     for it in items:
-        lines += [f"## {it['date']} — {it['author']}", "", it["url"], ""]
+        url = html.escape(it["url"])
+        parts += ["<article>", f"<h2>{html.escape(it['date'])} — {html.escape(it['author'])}</h2>",
+                  f'<div class="url"><a href="{url}" target="_blank" rel="noopener">{url}</a></div>']
+        original = [f"<h3>Question ({src})</h3>", _html_text(it["question"]),
+                    f"<h3>Answer ({src})</h3>", _html_text(it["answer"])]
         if it.get("question_tr") is not None:
-            lines += [f"**Question ({tgt})**", "", it["question_tr"], "", f"**Réponse ({tgt})**", "",
-                      it.get("answer_tr") or "(pas de réponse)", ""]
-        lines += [f"<details><summary>Original ({src})</summary>", "", "**Question**", "", it["question"], "",
-                  "**ANSWER**", "", it["answer"] or "(pas de réponse)", "", "</details>", "", "---", ""]
+            parts += [f"<h3>Question ({tgt})</h3>", _html_text(it["question_tr"]),
+                      f"<h3>Réponse ({tgt})</h3>", _html_text(it.get("answer_tr")),
+                      f"<details><summary>Original ({src})</summary>", *original, "</details>"]
+        else:
+            parts += original
+        parts.append("</article>")
+    parts.append("</main></body></html>")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_text("\n".join(parts), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -411,8 +454,8 @@ def main() -> int:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    out_path = out_dir / f"pedro_shitsumons_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.md"
-    write_markdown(items, out_path, source_lang, target_lang)
+    out_path = out_dir / f"pedro_shitsumons_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.html"
+    write_html(items, out_path, source_lang, target_lang)
     logger.info(f"Written: {out_path.resolve()}")
 
     if not args.no_open and pcfg.get("open_output", True) and os.name == "nt":
